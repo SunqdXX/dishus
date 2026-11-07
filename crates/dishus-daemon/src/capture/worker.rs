@@ -25,7 +25,9 @@ struct Out(Arc<Mutex<std::io::Stdout>>);
 
 impl Out {
     fn send(&self, ev: &WorkerEvent) -> bool {
-        let Ok(buf) = encode_frame(ev, MAX_WORKER_FRAME) else { return false };
+        let Ok(buf) = encode_frame(ev, MAX_WORKER_FRAME) else {
+            return false;
+        };
         let mut g = self.0.lock().expect("stdout lock");
         g.write_all(&buf).and_then(|_| g.flush()).is_ok()
     }
@@ -41,8 +43,18 @@ impl Capture {
     fn monitors(&self) -> Vec<MonitorInfo> {
         match self {
             Capture::Portal(p) => p.monitors(),
-            Capture::X11 => vec![MonitorInfo { index: 0, name: "X11 screen".into(), width: 0, height: 0 }],
-            Capture::Test => vec![MonitorInfo { index: 0, name: "Test pattern".into(), width: 1920, height: 1080 }],
+            Capture::X11 => vec![MonitorInfo {
+                index: 0,
+                name: "X11 screen".into(),
+                width: 0,
+                height: 0,
+            }],
+            Capture::Test => vec![MonitorInfo {
+                index: 0,
+                name: "Test pattern".into(),
+                width: 1920,
+                height: 1080,
+            }],
         }
     }
     fn source(&self, idx: u8) -> Result<(Source, Option<u32>)> {
@@ -60,7 +72,9 @@ async fn open_capture(opts: &WorkerOptions) -> Result<Capture, String> {
     }
     match portal::open(opts, false).await {
         Ok(p) => return Ok(Capture::Portal(p)),
-        Err(PortalError::Unavailable(e)) => tracing::info!("portal ScreenCast unavailable ({e}); trying X11"),
+        Err(PortalError::Unavailable(e)) => {
+            tracing::info!("portal ScreenCast unavailable ({e}); trying X11")
+        }
         Err(PortalError::Other(e)) => return Err(format!("{e:#}")),
     }
     if std::env::var_os("DISPLAY").is_some() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
@@ -79,20 +93,33 @@ pub async fn run(mode: &str, opts: WorkerOptions) -> Result<()> {
     match mode {
         "probe" => {
             let names: Vec<_> = encoders.iter().map(|e| e.name()).collect();
-            let src = if opts.test_source { "test pattern" } else { "portal/pipewire (x11 fallback)" };
+            let src = if opts.test_source {
+                "test pattern"
+            } else {
+                "portal/pipewire (x11 fallback)"
+            };
             out.send(&WorkerEvent::Info(format!(
                 "{src}; encoders: {}",
-                if names.is_empty() { "NONE FOUND".into() } else { names.join(" > ") }
+                if names.is_empty() {
+                    "NONE FOUND".into()
+                } else {
+                    names.join(" > ")
+                }
             )));
             Ok(())
         }
         "setup" => {
             let ev = match portal::open(&opts, true).await {
-                Ok(s) => WorkerEvent::Info(format!("screen-capture permission stored for {} monitor(s)", s.monitors().len())),
+                Ok(s) => WorkerEvent::Info(format!(
+                    "screen-capture permission stored for {} monitor(s)",
+                    s.monitors().len()
+                )),
                 Err(PortalError::Unavailable(e)) if std::env::var_os("DISPLAY").is_some() => {
                     WorkerEvent::Info(format!("no portal ({e}); X11 capture needs no permission"))
                 }
-                Err(PortalError::Unavailable(e)) => WorkerEvent::Failed(format!("portal ScreenCast unavailable: {e}")),
+                Err(PortalError::Unavailable(e)) => {
+                    WorkerEvent::Failed(format!("portal ScreenCast unavailable: {e}"))
+                }
                 Err(PortalError::Other(e)) => WorkerEvent::Failed(format!("{e:#}")),
             };
             out.send(&ev);
@@ -126,10 +153,21 @@ async fn session(opts: WorkerOptions, out: Out, encoders: Vec<pipeline::Encoder>
             }
         };
         match cmd {
-            WorkerCmd::Start { monitor, fps, bitrate_kbps, max_height } => {
+            WorkerCmd::Start {
+                monitor,
+                fps,
+                bitrate_kbps,
+                max_height,
+            } => {
                 running = None; // stop the previous pipeline first
                 let started = capture.source(monitor).and_then(|(src, src_height)| {
-                    let p = Params { fps, bitrate_kbps, max_height, src_height, show_cursor: opts.show_cursor };
+                    let p = Params {
+                        fps,
+                        bitrate_kbps,
+                        max_height,
+                        src_height,
+                        show_cursor: opts.show_cursor,
+                    };
                     let o1 = out.clone();
                     let o2 = out.clone();
                     pipeline::start(
@@ -137,7 +175,11 @@ async fn session(opts: WorkerOptions, out: Out, encoders: Vec<pipeline::Encoder>
                         &encoders,
                         &p,
                         Arc::new(move |f: pipeline::Frame| {
-                            o1.send(&WorkerEvent::Frame { pts_us: f.pts_us, keyframe: f.keyframe, data: f.data });
+                            o1.send(&WorkerEvent::Frame {
+                                pts_us: f.pts_us,
+                                keyframe: f.keyframe,
+                                data: f.data,
+                            });
                         }),
                         Arc::new(move |why: String| {
                             o2.send(&WorkerEvent::Failed(why));
@@ -146,7 +188,11 @@ async fn session(opts: WorkerOptions, out: Out, encoders: Vec<pipeline::Encoder>
                 });
                 match started {
                     Ok(r) => {
-                        out.send(&WorkerEvent::Started { width: r.width, height: r.height, encoder: r.encoder.name().into() });
+                        out.send(&WorkerEvent::Started {
+                            width: r.width,
+                            height: r.height,
+                            encoder: r.encoder.name().into(),
+                        });
                         r.control.force_keyframe();
                         running = Some(r);
                     }

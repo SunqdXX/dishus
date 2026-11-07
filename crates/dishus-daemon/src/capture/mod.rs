@@ -35,11 +35,15 @@ impl WorkerOptions {
     pub fn from_env() -> anyhow::Result<Self> {
         let token_file = std::env::var_os("DISHUS_W_TOKEN_FILE")
             .map(PathBuf::from)
-            .ok_or_else(|| anyhow::anyhow!("DISHUS_W_TOKEN_FILE not set (the worker is started by the daemon)"))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("DISHUS_W_TOKEN_FILE not set (the worker is started by the daemon)")
+            })?;
         Ok(Self {
             token_file,
             encoder_pref: std::env::var("DISHUS_W_ENCODER").unwrap_or_else(|_| "auto".into()),
-            show_cursor: std::env::var("DISHUS_W_CURSOR").map(|v| v != "0").unwrap_or(true),
+            show_cursor: std::env::var("DISHUS_W_CURSOR")
+                .map(|v| v != "0")
+                .unwrap_or(true),
             test_source: std::env::var_os("DISHUS_TEST_SOURCE").is_some_and(|v| v == "1"),
         })
     }

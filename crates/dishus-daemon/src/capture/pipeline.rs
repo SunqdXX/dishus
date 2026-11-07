@@ -43,7 +43,9 @@ impl Encoder {
     }
 
     fn present(self) -> bool {
-        self.factories().iter().all(|f| gst::ElementFactory::find(f).is_some())
+        self.factories()
+            .iter()
+            .all(|f| gst::ElementFactory::find(f).is_some())
     }
 }
 
@@ -54,11 +56,16 @@ pub fn init() -> Result<()> {
 
 /// Encoders to try, in order, given the config preference.
 pub fn candidates(pref: &str) -> Vec<Encoder> {
-    [Encoder::Nvenc, Encoder::Va, Encoder::X264, Encoder::OpenH264]
-        .into_iter()
-        .filter(|e| pref == "auto" || e.name() == pref)
-        .filter(|e| e.present())
-        .collect()
+    [
+        Encoder::Nvenc,
+        Encoder::Va,
+        Encoder::X264,
+        Encoder::OpenH264,
+    ]
+    .into_iter()
+    .filter(|e| pref == "auto" || e.name() == pref)
+    .filter(|e| e.present())
+    .collect()
 }
 
 /// Where pixels come from.
@@ -113,7 +120,9 @@ fn target_height(p: &Params) -> Option<u32> {
 
 fn encoder_desc(enc: Encoder, p: &Params) -> String {
     let kbps = p.bitrate_kbps;
-    let scale = target_height(p).map(|h| format!(",height={h}")).unwrap_or_default();
+    let scale = target_height(p)
+        .map(|h| format!(",height={h}"))
+        .unwrap_or_default();
     match enc {
         // Without scaling NVENC takes BGRx/RGBx straight from system memory and converts on the
         // GPU; that avoids loading NVRTC (cudaconvertscale), which costs ~100 MB of RSS.
@@ -152,7 +161,9 @@ pub struct Control {
 
 impl Control {
     pub fn force_keyframe(&self) {
-        let ev = gstreamer_video::UpstreamForceKeyUnitEvent::builder().all_headers(true).build();
+        let ev = gstreamer_video::UpstreamForceKeyUnitEvent::builder()
+            .all_headers(true)
+            .build();
         self.sink.send_event(ev);
     }
     pub fn set_bitrate(&self, kbps: u32) {
@@ -163,7 +174,8 @@ impl Control {
         }
     }
     pub fn set_fps(&self, fps: u8) {
-        self.rate.set_property("max-rate", i32::from(fps.clamp(1, 120)));
+        self.rate
+            .set_property("max-rate", i32::from(fps.clamp(1, 120)));
     }
 }
 
@@ -186,7 +198,13 @@ impl Drop for Running {
 type OnFrame = Arc<dyn Fn(Frame) + Send + Sync>;
 type OnFail = Arc<dyn Fn(String) + Send + Sync>;
 
-fn start_one(src: &Source, enc: Encoder, p: &Params, on_frame: OnFrame, on_fail: OnFail) -> Result<Running> {
+fn start_one(
+    src: &Source,
+    enc: Encoder,
+    p: &Params,
+    on_frame: OnFrame,
+    on_fail: OnFail,
+) -> Result<Running> {
     let desc = format!(
         "{} ! queue max-size-buffers=2 max-size-time=0 max-size-bytes=0 leaky=downstream ! \
          videorate name=rate drop-only=true max-rate={} ! {} ! \
@@ -201,10 +219,21 @@ fn start_one(src: &Source, enc: Encoder, p: &Params, on_frame: OnFrame, on_fail:
         .with_context(|| format!("building {} pipeline", enc.name()))?
         .downcast::<gst::Pipeline>()
         .map_err(|_| anyhow!("not a pipeline"))?;
-    let get = |n: &str| pipeline.by_name(n).ok_or_else(|| anyhow!("element {n} missing"));
+    let get = |n: &str| {
+        pipeline
+            .by_name(n)
+            .ok_or_else(|| anyhow!("element {n} missing"))
+    };
     let sink = get("sink")?;
-    let control = Control { enc: get("enc")?, rate: get("rate")?, sink: sink.clone(), kind: enc };
-    let appsink = sink.downcast::<gst_app::AppSink>().map_err(|_| anyhow!("not an appsink"))?;
+    let control = Control {
+        enc: get("enc")?,
+        rate: get("rate")?,
+        sink: sink.clone(),
+        kind: enc,
+    };
+    let appsink = sink
+        .downcast::<gst_app::AppSink>()
+        .map_err(|_| anyhow!("not an appsink"))?;
 
     let (first_tx, first_rx) = std::sync::mpsc::sync_channel::<(u32, u32)>(1);
     let first_tx = Mutex::new(Some(first_tx));
@@ -233,7 +262,9 @@ fn start_one(src: &Source, enc: Encoder, p: &Params, on_frame: OnFrame, on_fail:
             .build(),
     );
 
-    pipeline.set_state(gst::State::Playing).with_context(|| format!("starting {} pipeline", enc.name()))?;
+    pipeline
+        .set_state(gst::State::Playing)
+        .with_context(|| format!("starting {} pipeline", enc.name()))?;
     let stop = Arc::new(AtomicBool::new(false));
     let bus = pipeline.bus().context("no bus")?;
     let deadline = std::time::Instant::now() + Duration::from_secs(6);
@@ -241,46 +272,72 @@ fn start_one(src: &Source, enc: Encoder, p: &Params, on_frame: OnFrame, on_fail:
         if let Ok(dims) = first_rx.try_recv() {
             break dims;
         }
-        if let Some(msg) = bus.timed_pop_filtered(gst::ClockTime::from_mseconds(50), &[gst::MessageType::Error])
-            && let gst::MessageView::Error(e) = msg.view()
+        if let Some(msg) = bus.timed_pop_filtered(
+            gst::ClockTime::from_mseconds(50),
+            &[gst::MessageType::Error],
+        ) && let gst::MessageView::Error(e) = msg.view()
         {
             let _ = pipeline.set_state(gst::State::Null);
-            bail!("{} pipeline error: {} ({:?})", enc.name(), e.error(), e.debug());
+            bail!(
+                "{} pipeline error: {} ({:?})",
+                enc.name(),
+                e.error(),
+                e.debug()
+            );
         }
         if std::time::Instant::now() > deadline {
             let _ = pipeline.set_state(gst::State::Null);
             bail!("{} pipeline produced no frames within 6 s", enc.name());
         }
     };
-    let running = Running { control, width, height, encoder: enc, pipeline: pipeline.clone(), stop: stop.clone() };
+    let running = Running {
+        control,
+        width,
+        height,
+        encoder: enc,
+        pipeline: pipeline.clone(),
+        stop: stop.clone(),
+    };
 
-    std::thread::Builder::new().name("gst-bus".into()).spawn(move || {
-        while !stop.load(Ordering::SeqCst) {
-            let Some(msg) = bus.timed_pop_filtered(
-                gst::ClockTime::from_mseconds(250),
-                &[gst::MessageType::Error, gst::MessageType::Eos],
-            ) else {
-                continue;
-            };
-            if stop.load(Ordering::SeqCst) {
+    std::thread::Builder::new()
+        .name("gst-bus".into())
+        .spawn(move || {
+            while !stop.load(Ordering::SeqCst) {
+                let Some(msg) = bus.timed_pop_filtered(
+                    gst::ClockTime::from_mseconds(250),
+                    &[gst::MessageType::Error, gst::MessageType::Eos],
+                ) else {
+                    continue;
+                };
+                if stop.load(Ordering::SeqCst) {
+                    break;
+                }
+                let why = match msg.view() {
+                    gst::MessageView::Error(e) => {
+                        format!("pipeline error: {} ({:?})", e.error(), e.debug())
+                    }
+                    _ => "pipeline ended (EOS)".into(),
+                };
+                let _ = pipeline.set_state(gst::State::Null);
+                on_fail(why);
                 break;
             }
-            let why = match msg.view() {
-                gst::MessageView::Error(e) => format!("pipeline error: {} ({:?})", e.error(), e.debug()),
-                _ => "pipeline ended (EOS)".into(),
-            };
-            let _ = pipeline.set_state(gst::State::Null);
-            on_fail(why);
-            break;
-        }
-    })?;
+        })?;
     Ok(running)
 }
 
 /// Try encoders in order until one runs.
-pub fn start(src: &Source, encoders: &[Encoder], p: &Params, on_frame: OnFrame, on_fail: OnFail) -> Result<Running> {
+pub fn start(
+    src: &Source,
+    encoders: &[Encoder],
+    p: &Params,
+    on_frame: OnFrame,
+    on_fail: OnFail,
+) -> Result<Running> {
     if encoders.is_empty() {
-        bail!("no H.264 encoder found (gst-plugins-bad provides NVENC/VA, gst-plugins-ugly provides x264)");
+        bail!(
+            "no H.264 encoder found (gst-plugins-bad provides NVENC/VA, gst-plugins-ugly provides x264)"
+        );
     }
     let mut errors = Vec::new();
     for &e in encoders {

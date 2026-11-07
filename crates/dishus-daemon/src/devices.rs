@@ -16,7 +16,10 @@ pub const DAY_SECS: u64 = 86_400;
 pub const MAX_DEVICES: usize = 32;
 
 pub fn now_unix() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,14 +59,18 @@ impl DeviceStore {
         let store: Self = toml::from_str(&s).context("parsing devices.toml")?;
         for d in &store.devices {
             if d.endpoint_id().is_none() || !valid_name(&d.name) {
-                bail!("devices.toml has an invalid entry ({}); fix or remove it", d.id);
+                bail!(
+                    "devices.toml has an invalid entry ({}); fix or remove it",
+                    d.id
+                );
             }
         }
         Ok(store)
     }
 
     pub fn save(&self, paths: &Paths) -> Result<()> {
-        let header = "# DiShus paired devices. Managed by `dishus`; edits are picked up on restart.\n";
+        let header =
+            "# DiShus paired devices. Managed by `dishus`; edits are picked up on restart.\n";
         let body = toml::to_string_pretty(self)?;
         write_private(&paths.devices_file(), format!("{header}{body}").as_bytes())
     }
@@ -118,7 +125,11 @@ impl DeviceStore {
             bail!("days must be within 1..={MAX_EXPIRY_DAYS}");
         }
         let hex = id.to_string();
-        let d = self.devices.iter_mut().find(|d| d.id == hex).context("unknown device")?;
+        let d = self
+            .devices
+            .iter_mut()
+            .find(|d| d.id == hex)
+            .context("unknown device")?;
         d.expires_at = now + u64::from(days) * DAY_SECS;
         Ok(d.expires_at)
     }
@@ -141,15 +152,23 @@ impl DeviceStore {
         if sel.is_empty() {
             bail!("empty device selector");
         }
-        let by_name: Vec<_> =
-            self.devices.iter().enumerate().filter(|(_, d)| d.name == sel).collect();
+        let by_name: Vec<_> = self
+            .devices
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| d.name == sel)
+            .collect();
         if by_name.len() == 1 {
             return Ok(by_name[0].0);
         }
         let lower = sel.to_ascii_lowercase();
         if lower.len() >= 6 {
-            let by_id: Vec<_> =
-                self.devices.iter().enumerate().filter(|(_, d)| d.id.starts_with(&lower)).collect();
+            let by_id: Vec<_> = self
+                .devices
+                .iter()
+                .enumerate()
+                .filter(|(_, d)| d.id.starts_with(&lower))
+                .collect();
             if by_id.len() == 1 {
                 return Ok(by_id[0].0);
             }

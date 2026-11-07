@@ -72,7 +72,9 @@ impl AppState {
     ) -> Self {
         let lockdown = paths.lockdown_file().exists();
         if lockdown {
-            tracing::warn!("daemon is in LOCKDOWN (dishus kill); run `dishus unlock` to allow sessions");
+            tracing::warn!(
+                "daemon is in LOCKDOWN (dishus kill); run `dishus unlock` to allow sessions"
+            );
         }
         Self {
             paths,
@@ -94,12 +96,20 @@ impl AppState {
 
     pub fn is_session_allowed(&self, id: &EndpointId) -> bool {
         !self.lockdown.load(Ordering::SeqCst)
-            && self.devices.read().expect("devices lock").is_allowed(id, now_unix())
+            && self
+                .devices
+                .read()
+                .expect("devices lock")
+                .is_allowed(id, now_unix())
     }
 
     pub fn is_pairing_open(&self) -> bool {
         !self.lockdown.load(Ordering::SeqCst)
-            && self.pairing.lock().expect("pairing lock").is_open(Instant::now())
+            && self
+                .pairing
+                .lock()
+                .expect("pairing lock")
+                .is_open(Instant::now())
     }
 
     pub fn device(&self, id: &EndpointId) -> Option<Device> {
@@ -113,7 +123,11 @@ impl AppState {
             anyhow::bail!("daemon is in lockdown; run `dishus unlock` first");
         }
         let ttl = Duration::from_secs(self.config.pairing_ttl_secs);
-        let tok = self.pairing.lock().expect("pairing lock").open(ttl, Instant::now())?;
+        let tok = self
+            .pairing
+            .lock()
+            .expect("pairing lock")
+            .open(ttl, Instant::now())?;
         Ok((tok, ttl))
     }
 
@@ -127,23 +141,31 @@ impl AppState {
         if self.lockdown.load(Ordering::SeqCst) {
             return PairResponse::Rejected;
         }
-        let verdict = self.pairing.lock().expect("pairing lock").check(&req.token, Instant::now());
+        let verdict = self
+            .pairing
+            .lock()
+            .expect("pairing lock")
+            .check(&req.token, Instant::now());
         match verdict {
             PairCheck::Accepted => {}
             PairCheck::Rejected | PairCheck::Closed => {
-                tracing::warn!("pairing attempt from {} rejected ({verdict:?})", peer.fmt_short());
+                tracing::warn!(
+                    "pairing attempt from {} rejected ({verdict:?})",
+                    peer.fmt_short()
+                );
                 return PairResponse::Rejected;
             }
         }
         let now = now_unix();
         let res = {
             let mut d = self.devices.write().expect("devices lock");
-            d.add(peer, &req.device_name, self.config.expiry_days, now).and_then(|exp| {
-                if self.persist {
-                    d.save(&self.paths)?;
-                }
-                Ok(exp)
-            })
+            d.add(peer, &req.device_name, self.config.expiry_days, now)
+                .and_then(|exp| {
+                    if self.persist {
+                        d.save(&self.paths)?;
+                    }
+                    Ok(exp)
+                })
         };
         match res {
             Ok(expires_at) => {
@@ -152,7 +174,10 @@ impl AppState {
                     "DiShus: phone paired",
                     &format!("{} can now control this PC", req.device_name),
                 );
-                PairResponse::Accepted { pc_name: self.config.pc_name.clone(), expires_at }
+                PairResponse::Accepted {
+                    pc_name: self.config.pc_name.clone(),
+                    expires_at,
+                }
             }
             Err(e) => {
                 tracing::error!("storing paired device failed: {e:#}");
@@ -178,7 +203,9 @@ impl AppState {
             let idx = d.resolve(selector)?;
             d.list()[idx].clone()
         };
-        let peer = id.endpoint_id().ok_or_else(|| anyhow::anyhow!("corrupt id"))?;
+        let peer = id
+            .endpoint_id()
+            .ok_or_else(|| anyhow::anyhow!("corrupt id"))?;
         let exp = self.renew(&peer, days)?;
         Ok((id, exp))
     }
@@ -217,7 +244,10 @@ impl AppState {
         let n = self.end_all_sessions(ByeReason::Killed);
         self.release_input();
         write_private(&self.paths.lockdown_file(), b"locked by `dishus kill`\n")?;
-        self.notifier.notify("DiShus: KILLED", "All sessions cut. Locked until `dishus unlock`.");
+        self.notifier.notify(
+            "DiShus: KILLED",
+            "All sessions cut. Locked until `dishus unlock`.",
+        );
         Ok(n)
     }
 
@@ -242,14 +272,18 @@ impl AppState {
     ) -> (u64, watch::Receiver<Option<ByeReason>>) {
         let id = self.next_session_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = watch::channel(None);
-        let old = self.session.lock().expect("session lock").replace(ActiveSession {
-            id,
-            peer,
-            name,
-            since: now_unix(),
-            path,
-            cancel: tx,
-        });
+        let old = self
+            .session
+            .lock()
+            .expect("session lock")
+            .replace(ActiveSession {
+                id,
+                peer,
+                name,
+                since: now_unix(),
+                path,
+                cancel: tx,
+            });
         if let Some(old) = old {
             tracing::info!("session from {} replaced", old.name);
             let _ = old.cancel.send(Some(ByeReason::Replaced));
@@ -299,7 +333,12 @@ impl AppState {
             .lock()
             .expect("session lock")
             .iter()
-            .map(|a| SessionInfo { peer: a.peer, name: a.name.clone(), since: a.since, path: a.path.clone() })
+            .map(|a| SessionInfo {
+                peer: a.peer,
+                name: a.name.clone(),
+                since: a.since,
+                path: a.path.clone(),
+            })
             .collect()
     }
 
@@ -323,7 +362,8 @@ impl RateLimiter {
     /// Record an attempt; returns false if the IP is over its budget.
     pub fn allow(&mut self, ip: IpAddr, now: Instant) -> bool {
         if self.by_ip.len() >= Self::MAX_ENTRIES {
-            self.by_ip.retain(|_, (start, _)| now.duration_since(*start) < Self::WINDOW);
+            self.by_ip
+                .retain(|_, (start, _)| now.duration_since(*start) < Self::WINDOW);
             if self.by_ip.len() >= Self::MAX_ENTRIES {
                 // under a flood from many IPs: refuse new ones rather than grow unbounded
                 return self.by_ip.contains_key(&ip) && self.bump(ip, now);

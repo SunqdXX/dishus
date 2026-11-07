@@ -81,7 +81,10 @@ impl PairingInfo {
         if uri.len() > MAX_URI_LEN {
             return Err(PairingUriError::TooLong);
         }
-        let query = uri.trim().strip_prefix(SCHEME_PREFIX).ok_or(PairingUriError::Scheme)?;
+        let query = uri
+            .trim()
+            .strip_prefix(SCHEME_PREFIX)
+            .ok_or(PairingUriError::Scheme)?;
         let mut version = None;
         let mut id = None;
         let mut token = None;
@@ -89,7 +92,9 @@ impl PairingInfo {
         let mut relays = Vec::new();
         let mut addrs = Vec::new();
         for pair in query.split('&') {
-            let (k, v) = pair.split_once('=').ok_or(PairingUriError::Field("query"))?;
+            let (k, v) = pair
+                .split_once('=')
+                .ok_or(PairingUriError::Field("query"))?;
             match k {
                 "v" => version = Some(v),
                 "id" => id = Some(decode32(v).ok_or(PairingUriError::Field("id"))?),
@@ -190,16 +195,28 @@ mod tests {
 
     #[test]
     fn rejects() {
-        assert_eq!(PairingInfo::from_uri("https://x"), Err(PairingUriError::Scheme));
+        assert_eq!(
+            PairingInfo::from_uri("https://x"),
+            Err(PairingUriError::Scheme)
+        );
         let uri = sample().to_uri().replace("v=1", "v=2");
         assert_eq!(PairingInfo::from_uri(&uri), Err(PairingUriError::Version));
         let uri = sample().to_uri().replace("&t=", "&t=AA");
         assert!(PairingInfo::from_uri(&uri).is_err());
         let uri = sample().to_uri() + "&r=javascript%3Aalert(1)";
-        assert_eq!(PairingInfo::from_uri(&uri), Err(PairingUriError::Field("r")));
+        assert_eq!(
+            PairingInfo::from_uri(&uri),
+            Err(PairingUriError::Field("r"))
+        );
         let uri = sample().to_uri() + "&a=notanaddr";
-        assert_eq!(PairingInfo::from_uri(&uri), Err(PairingUriError::Field("a")));
-        assert_eq!(PairingInfo::from_uri(&"a".repeat(5000)), Err(PairingUriError::TooLong));
+        assert_eq!(
+            PairingInfo::from_uri(&uri),
+            Err(PairingUriError::Field("a"))
+        );
+        assert_eq!(
+            PairingInfo::from_uri(&"a".repeat(5000)),
+            Err(PairingUriError::TooLong)
+        );
     }
 
     #[test]

@@ -17,8 +17,8 @@ use tokio::{sync::mpsc, time::timeout};
 
 use dishus_proto::{
     ByeReason, ClientMsg, FrameError, MAX_CONTROL_FRAME, MonitorInfo, NoticeKind, PROTO_VERSION,
-    SESSION_IDLE_TIMEOUT_MS, ServerMsg, StreamParams, VideoHeader, read_frame, video::FLAG_KEYFRAME,
-    write_frame,
+    SESSION_IDLE_TIMEOUT_MS, ServerMsg, StreamParams, VideoHeader, read_frame,
+    video::FLAG_KEYFRAME, write_frame,
 };
 
 use crate::{
@@ -51,7 +51,9 @@ impl Drop for SessionGuard {
     fn drop(&mut self) {
         self.state.release_input();
         self.state.unregister_session(self.id);
-        self.state.notifier.notify("DiShus: phone disconnected", &self.name);
+        self.state
+            .notifier
+            .notify("DiShus: phone disconnected", &self.name);
     }
 }
 
@@ -86,9 +88,16 @@ pub async fn handle(state: Arc<AppState>, conn: Connection) -> Result<()> {
     // Use the name stored at pairing time, not whatever this connection claims.
     let name = device.name.clone();
     let (sid, mut cancel) = state.register_session(peer, name.clone(), path_summary(&conn));
-    let _guard = SessionGuard { state: state.clone(), id: sid, name: name.clone() };
+    let _guard = SessionGuard {
+        state: state.clone(),
+        id: sid,
+        name: name.clone(),
+    };
     state.touch(&peer);
-    state.notifier.notify("DiShus: phone connected", &format!("{name} is controlling this PC"));
+    state.notifier.notify(
+        "DiShus: phone connected",
+        &format!("{name} is controlling this PC"),
+    );
 
     // Writer task: everything we send on the control stream goes through here.
     let (out_tx, out_rx) = mpsc::channel::<ServerMsg>(64);
@@ -100,7 +109,10 @@ pub async fn handle(state: Arc<AppState>, conn: Connection) -> Result<()> {
         Ok(Err(e)) => {
             tracing::warn!("capture unavailable: {e:#}");
             let _ = out_tx
-                .send(ServerMsg::Notice { kind: NoticeKind::CaptureUnavailable, message: truncate(&format!("{e:#}")) })
+                .send(ServerMsg::Notice {
+                    kind: NoticeKind::CaptureUnavailable,
+                    message: truncate(&format!("{e:#}")),
+                })
                 .await;
             None
         }
@@ -108,7 +120,9 @@ pub async fn handle(state: Arc<AppState>, conn: Connection) -> Result<()> {
             let _ = out_tx
                 .send(ServerMsg::Notice {
                     kind: NoticeKind::CaptureUnavailable,
-                    message: "screen capture permission timed out (run `dishus setup-capture` at the PC)".into(),
+                    message:
+                        "screen capture permission timed out (run `dishus setup-capture` at the PC)"
+                            .into(),
                 })
                 .await;
             None
@@ -128,7 +142,14 @@ pub async fn handle(state: Arc<AppState>, conn: Connection) -> Result<()> {
 
     let (vid_tx, vid_rx) = mpsc::channel::<VideoCmd>(16);
     let video = capture.map(|cap| {
-        tokio::spawn(video_task(conn.clone(), cap, params, vid_rx, out_tx.clone(), state.config.video.max_bitrate_kbps))
+        tokio::spawn(video_task(
+            conn.clone(),
+            cap,
+            params,
+            vid_rx,
+            out_tx.clone(),
+            state.config.video.max_bitrate_kbps,
+        ))
     });
 
     let idle = Duration::from_millis(SESSION_IDLE_TIMEOUT_MS);
@@ -231,7 +252,10 @@ async fn handle_msg(
             }
             Err(e) => {
                 let _ = out
-                    .send(ServerMsg::Notice { kind: NoticeKind::Refused, message: truncate(&format!("{e:#}")) })
+                    .send(ServerMsg::Notice {
+                        kind: NoticeKind::Refused,
+                        message: truncate(&format!("{e:#}")),
+                    })
                     .await;
             }
         },
@@ -391,7 +415,10 @@ async fn video_task(
             Err(e) => {
                 tracing::error!("starting video stream: {e:#}");
                 let _ = out
-                    .send(ServerMsg::Notice { kind: NoticeKind::CaptureUnavailable, message: truncate(&format!("{e:#}")) })
+                    .send(ServerMsg::Notice {
+                        kind: NoticeKind::CaptureUnavailable,
+                        message: truncate(&format!("{e:#}")),
+                    })
                     .await;
                 // wait for the phone to ask for something else
                 loop {
@@ -408,7 +435,12 @@ async fn video_task(
         };
         tracing::info!(
             "streaming monitor {} at {}x{} via {} ({} kbps, {} fps)",
-            params.monitor, stream.width, stream.height, stream.encoder, abr.bitrate, abr.fps
+            params.monitor,
+            stream.width,
+            stream.height,
+            stream.encoder,
+            abr.bitrate,
+            abr.fps
         );
         let _ = out
             .send(ServerMsg::StreamInfo {

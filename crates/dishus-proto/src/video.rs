@@ -70,7 +70,12 @@ mod tests {
 
     #[test]
     fn roundtrip() {
-        let h = VideoHeader { seq: 7, pts_us: 123_456, flags: FLAG_KEYFRAME, monitor: 1 };
+        let h = VideoHeader {
+            seq: 7,
+            pts_us: 123_456,
+            flags: FLAG_KEYFRAME,
+            monitor: 1,
+        };
         let mut buf = h.encode().to_vec();
         buf.extend_from_slice(&[0, 0, 0, 1, 0x65]);
         let (h2, p) = VideoHeader::decode(&buf).unwrap();
@@ -82,7 +87,12 @@ mod tests {
     #[test]
     fn rejects_bad() {
         assert!(VideoHeader::decode(&[0; 10]).is_err());
-        let h = VideoHeader { seq: 1, pts_us: 1, flags: 0, monitor: 0 };
+        let h = VideoHeader {
+            seq: 1,
+            pts_us: 1,
+            flags: 0,
+            monitor: 0,
+        };
         let mut buf = h.encode().to_vec();
         assert!(VideoHeader::decode(&buf).is_err(), "empty payload");
         buf.push(1);

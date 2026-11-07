@@ -32,10 +32,18 @@ pub enum PairCheck {
 
 impl Pairing {
     /// Open (or re-open with a fresh token) the window. Returns the token to show to the user.
-    pub fn open(&mut self, ttl: Duration, now: Instant) -> anyhow::Result<Zeroizing<[u8; TOKEN_LEN]>> {
+    pub fn open(
+        &mut self,
+        ttl: Duration,
+        now: Instant,
+    ) -> anyhow::Result<Zeroizing<[u8; TOKEN_LEN]>> {
         let mut token = Zeroizing::new([0u8; TOKEN_LEN]);
         getrandom::fill(token.as_mut()).map_err(|e| anyhow::anyhow!("getrandom: {e}"))?;
-        self.window = Some(Window { token: token.clone(), deadline: now + ttl, failures: 0 });
+        self.window = Some(Window {
+            token: token.clone(),
+            deadline: now + ttl,
+            failures: 0,
+        });
         Ok(token)
     }
 
@@ -53,7 +61,9 @@ impl Pairing {
 
     /// Check a presented token. On success the window is consumed (single use).
     pub fn check(&mut self, presented: &[u8; TOKEN_LEN], now: Instant) -> PairCheck {
-        let Some(w) = self.window.as_mut() else { return PairCheck::Closed };
+        let Some(w) = self.window.as_mut() else {
+            return PairCheck::Closed;
+        };
         if now >= w.deadline {
             self.close();
             return PairCheck::Closed;
@@ -119,7 +129,11 @@ mod tests {
         assert!(p.is_open(now));
         assert_eq!(p.check(&wrong, now), PairCheck::Rejected);
         assert!(!p.is_open(now), "closed after too many failures");
-        assert_eq!(p.check(&t, now), PairCheck::Closed, "even the right token is refused now");
+        assert_eq!(
+            p.check(&t, now),
+            PairCheck::Closed,
+            "even the right token is refused now"
+        );
     }
 
     #[test]

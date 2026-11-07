@@ -1,0 +1,7 @@
+# Give the user logged in at the local seat access to /dev/uinput (needed by dishus-daemon to
+# create its virtual keyboard and pointer). NOT installed automatically: on a multi-user machine
+# anyone with uinput access can inject input system-wide. Install with:
+#   sudo install -Dm644 /usr/share/dishus/70-dishus-uinput.rules /etc/udev/rules.d/70-dishus-uinput.rules
+#   echo uinput | sudo tee /etc/modules-load.d/uinput.conf
+#   sudo udevadm control --reload && sudo modprobe uinput && sudo udevadm trigger
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"

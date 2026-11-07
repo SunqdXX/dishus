@@ -2,8 +2,8 @@
 //! drive the same code with fake capture/input backends.
 
 pub mod abr;
-pub mod capture;
 pub mod backend;
+pub mod capture;
 pub mod config;
 pub mod devices;
 pub mod gate;

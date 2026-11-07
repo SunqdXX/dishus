@@ -46,7 +46,7 @@ gstreamer-video = { version = "0.25", optional = true }
 evdev = { version = "0.13", optional = true }
 
 [dev-dependencies]
-dishus-core = { path = "../dishus-core" }
+dishus-core = { path = "../dishus-core", version = "0.1.0" }
 tempfile = "3"
 tokio = { workspace = true, features = ["test-util"] }
 

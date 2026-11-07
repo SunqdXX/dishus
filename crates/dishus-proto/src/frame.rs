@@ -87,16 +87,22 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::msg::{ClientMsg, MouseButton};
     use crate::MAX_CONTROL_FRAME;
+    use crate::msg::{ClientMsg, MouseButton};
 
     #[tokio::test]
     async fn roundtrip() {
         let msgs = vec![
             ClientMsg::Ping { t: 42 },
-            ClientMsg::Key { code: 30, down: true },
+            ClientMsg::Key {
+                code: 30,
+                down: true,
+            },
             ClientMsg::MouseMove { dx: -5, dy: 300 },
-            ClientMsg::MouseButton { button: MouseButton::Right, down: false },
+            ClientMsg::MouseButton {
+                button: MouseButton::Right,
+                down: false,
+            },
             ClientMsg::Scroll { dx: 0, dy: -120 },
         ];
         let mut buf = Vec::new();
@@ -131,22 +137,43 @@ mod tests {
         buf.extend_from_slice(&3u32.to_be_bytes());
         buf.extend_from_slice(&[0xff, 0xff, 0xff]);
         let mut r = &buf[..];
-        assert!(read_frame::<_, ClientMsg>(&mut r, MAX_CONTROL_FRAME).await.is_err());
+        assert!(
+            read_frame::<_, ClientMsg>(&mut r, MAX_CONTROL_FRAME)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
     async fn trailing_bytes_rejected() {
         let mut body = postcard::to_stdvec(&ClientMsg::Ping { t: 1 }).unwrap();
         body.push(0);
-        assert!(matches!(decode_body::<ClientMsg>(&body), Err(FrameError::Invalid(_))));
+        assert!(matches!(
+            decode_body::<ClientMsg>(&body),
+            Err(FrameError::Invalid(_))
+        ));
     }
 
     #[tokio::test]
     async fn invalid_field_rejected() {
         // keycode 0 is KEY_RESERVED and must not be accepted
-        let body = postcard::to_stdvec(&ClientMsg::Key { code: 0, down: true }).unwrap();
-        assert!(matches!(decode_body::<ClientMsg>(&body), Err(FrameError::Invalid(_))));
-        let body = postcard::to_stdvec(&ClientMsg::Key { code: 116, down: true }).unwrap();
-        assert!(matches!(decode_body::<ClientMsg>(&body), Err(FrameError::Invalid(_))), "KEY_POWER");
+        let body = postcard::to_stdvec(&ClientMsg::Key {
+            code: 0,
+            down: true,
+        })
+        .unwrap();
+        assert!(matches!(
+            decode_body::<ClientMsg>(&body),
+            Err(FrameError::Invalid(_))
+        ));
+        let body = postcard::to_stdvec(&ClientMsg::Key {
+            code: 116,
+            down: true,
+        })
+        .unwrap();
+        assert!(
+            matches!(decode_body::<ClientMsg>(&body), Err(FrameError::Invalid(_))),
+            "KEY_POWER"
+        );
     }
 }

@@ -12,12 +12,17 @@ use clap::{Parser, Subcommand};
 use tokio::{net::UnixStream, time::timeout};
 
 use dishus_proto::{
-    MAX_EXPIRY_DAYS, read_frame, write_frame,
+    MAX_EXPIRY_DAYS,
     ipc::{IpcDevice, IpcRequest, IpcResponse, MAX_IPC_FRAME},
+    read_frame, write_frame,
 };
 
 #[derive(Parser)]
-#[command(name = "dishus", version, about = "Control the DiShus remote-control daemon")]
+#[command(
+    name = "dishus",
+    version,
+    about = "Control the DiShus remote-control daemon"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -66,11 +71,16 @@ fn devices_file() -> Result<PathBuf> {
 
 async fn call(req: IpcRequest, wait: Duration) -> Result<IpcResponse> {
     let path = runtime_socket()?;
-    let mut s = UnixStream::connect(&path)
-        .await
-        .with_context(|| format!("daemon not running? ({}). Try: systemctl --user start dishus", path.display()))?;
+    let mut s = UnixStream::connect(&path).await.with_context(|| {
+        format!(
+            "daemon not running? ({}). Try: systemctl --user start dishus",
+            path.display()
+        )
+    })?;
     write_frame(&mut s, &req, MAX_IPC_FRAME).await?;
-    let resp: IpcResponse = timeout(wait, read_frame(&mut s, MAX_IPC_FRAME)).await.context("daemon did not answer")??;
+    let resp: IpcResponse = timeout(wait, read_frame(&mut s, MAX_IPC_FRAME))
+        .await
+        .context("daemon did not answer")??;
     if let IpcResponse::Error(e) = &resp {
         bail!("{e}");
     }
@@ -78,7 +88,10 @@ async fn call(req: IpcRequest, wait: Duration) -> Result<IpcResponse> {
 }
 
 fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn human_until(t: u64) -> String {
@@ -87,7 +100,13 @@ fn human_until(t: u64) -> String {
         return "EXPIRED".into();
     }
     let d = t - n;
-    if d >= 86_400 { format!("{}d", d / 86_400) } else if d >= 3600 { format!("{}h", d / 3600) } else { format!("{}m", d / 60) }
+    if d >= 86_400 {
+        format!("{}d", d / 86_400)
+    } else if d >= 3600 {
+        format!("{}h", d / 3600)
+    } else {
+        format!("{}m", d / 60)
+    }
 }
 
 fn human_ago(t: u64) -> String {
@@ -95,7 +114,15 @@ fn human_ago(t: u64) -> String {
         return "never".into();
     }
     let d = now().saturating_sub(t);
-    if d < 120 { "just now".into() } else if d < 7200 { format!("{}m ago", d / 60) } else if d < 172_800 { format!("{}h ago", d / 3600) } else { format!("{}d ago", d / 86_400) }
+    if d < 120 {
+        "just now".into()
+    } else if d < 7200 {
+        format!("{}m ago", d / 60)
+    } else if d < 172_800 {
+        format!("{}h ago", d / 3600)
+    } else {
+        format!("{}d ago", d / 86_400)
+    }
 }
 
 fn print_devices(devs: &[IpcDevice]) {
@@ -103,7 +130,7 @@ fn print_devices(devs: &[IpcDevice]) {
         println!("No paired phones. Run `dishus pair`.");
         return;
     }
-    println!("{:<14} {:<24} {:<9} {:<12} {}", "ID", "NAME", "EXPIRES", "LAST SEEN", "");
+    println!("{:<14} {:<24} {:<9} LAST SEEN", "ID", "NAME", "EXPIRES");
     for d in devs {
         println!(
             "{:<14} {:<24} {:<9} {:<12} {}",
@@ -130,7 +157,14 @@ fn offline_devices() -> Result<Vec<IpcDevice>> {
         for d in arr {
             let s = |k: &str| d.get(k).and_then(|x| x.as_str()).unwrap_or("").to_owned();
             let n = |k: &str| d.get(k).and_then(|x| x.as_integer()).unwrap_or(0).max(0) as u64;
-            out.push(IpcDevice { id: s("id"), name: s("name"), paired_at: n("paired_at"), expires_at: n("expires_at"), last_seen: n("last_seen"), connected: false });
+            out.push(IpcDevice {
+                id: s("id"),
+                name: s("name"),
+                paired_at: n("paired_at"),
+                expires_at: n("expires_at"),
+                last_seen: n("last_seen"),
+                connected: false,
+            });
         }
     }
     Ok(out)
@@ -141,7 +175,10 @@ fn offline_revoke(sel: &str) -> Result<String> {
     let path = devices_file()?;
     let raw = std::fs::read_to_string(&path).context("no devices.toml")?;
     let mut v: toml::Table = raw.parse()?;
-    let arr = v.get_mut("device").and_then(|d| d.as_array_mut()).context("no devices")?;
+    let arr = v
+        .get_mut("device")
+        .and_then(|d| d.as_array_mut())
+        .context("no devices")?;
     let matches: Vec<usize> = arr
         .iter()
         .enumerate()
@@ -159,12 +196,21 @@ fn offline_revoke(sel: &str) -> Result<String> {
     };
     let removed = arr.remove(idx);
     let tmp = path.with_extension("toml.tmp");
-    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&tmp)?;
     f.write_all(toml::to_string_pretty(&v)?.as_bytes())?;
     f.sync_all()?;
     std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
     std::fs::rename(&tmp, &path)?;
-    Ok(removed.get("name").and_then(|x| x.as_str()).unwrap_or("?").to_owned())
+    Ok(removed
+        .get("name")
+        .and_then(|x| x.as_str())
+        .unwrap_or("?")
+        .to_owned())
 }
 
 fn print_qr(uri: &str) -> Result<()> {
@@ -188,12 +234,29 @@ async fn main() -> Result<()> {
             IpcResponse::Status(s) => {
                 println!("DiShus {} on \"{}\"", s.version, s.pc_name);
                 println!("  PC id       {}", s.endpoint_id);
-                println!("  relays      {}", if s.relays.is_empty() { "(none yet)".into() } else { s.relays.join(", ") });
-                println!("  direct      {}", if s.direct_addrs.is_empty() { "-".into() } else { s.direct_addrs.join(", ") });
+                println!(
+                    "  relays      {}",
+                    if s.relays.is_empty() {
+                        "(none yet)".into()
+                    } else {
+                        s.relays.join(", ")
+                    }
+                );
+                println!(
+                    "  direct      {}",
+                    if s.direct_addrs.is_empty() {
+                        "-".into()
+                    } else {
+                        s.direct_addrs.join(", ")
+                    }
+                );
                 println!("  capture     {}", s.capture_backend);
                 println!("  input       {}", s.input_backend);
                 println!("  devices     {} paired", s.devices);
-                println!("  pairing     {}", if s.pairing_open { "OPEN" } else { "closed" });
+                println!(
+                    "  pairing     {}",
+                    if s.pairing_open { "OPEN" } else { "closed" }
+                );
                 if s.lockdown {
                     println!("  LOCKDOWN    all connections refused (dishus unlock)");
                 }
@@ -201,7 +264,13 @@ async fn main() -> Result<()> {
                     println!("  sessions    none");
                 }
                 for x in s.sessions {
-                    println!("  session     {} ({}) since {} · {}", x.name, &x.id[..12], human_ago(x.since), x.path);
+                    println!(
+                        "  session     {} ({}) since {} · {}",
+                        x.name,
+                        &x.id[..12],
+                        human_ago(x.since),
+                        x.path
+                    );
                 }
             }
             r => bail!("unexpected reply {r:?}"),
@@ -215,7 +284,14 @@ async fn main() -> Result<()> {
             }
             Err(e) => return Err(e),
         },
-        Cmd::Revoke { device } => match call(IpcRequest::Revoke { selector: device.clone() }, short).await {
+        Cmd::Revoke { device } => match call(
+            IpcRequest::Revoke {
+                selector: device.clone(),
+            },
+            short,
+        )
+        .await
+        {
             Ok(IpcResponse::Ok(m)) => println!("{m}"),
             Ok(r) => bail!("unexpected reply {r:?}"),
             Err(e) if format!("{e}").contains("daemon not running") => {
@@ -224,7 +300,15 @@ async fn main() -> Result<()> {
             }
             Err(e) => return Err(e),
         },
-        Cmd::Renew { device, days } => match call(IpcRequest::Renew { selector: device, days }, short).await? {
+        Cmd::Renew { device, days } => match call(
+            IpcRequest::Renew {
+                selector: device,
+                days,
+            },
+            short,
+        )
+        .await?
+        {
             IpcResponse::Ok(m) => println!("{m}"),
             r => bail!("unexpected reply {r:?}"),
         },
@@ -233,7 +317,9 @@ async fn main() -> Result<()> {
             Ok(r) => bail!("unexpected reply {r:?}"),
             Err(e) => {
                 eprintln!("kill via daemon failed: {e:#}\nStopping the service instead.");
-                let st = std::process::Command::new("systemctl").args(["--user", "stop", "dishus.service"]).status();
+                let st = std::process::Command::new("systemctl")
+                    .args(["--user", "stop", "dishus.service"])
+                    .status();
                 bail!("daemon unreachable; `systemctl --user stop dishus` -> {st:?}");
             }
         },
@@ -242,7 +328,9 @@ async fn main() -> Result<()> {
             r => bail!("unexpected reply {r:?}"),
         },
         Cmd::SetupCapture => {
-            println!("A screen-share dialog should appear on this PC. Select ALL monitors and allow it to be remembered.");
+            println!(
+                "A screen-share dialog should appear on this PC. Select ALL monitors and allow it to be remembered."
+            );
             match call(IpcRequest::SetupCapture, Duration::from_secs(180)).await? {
                 IpcResponse::Ok(m) => println!("{m}"),
                 r => bail!("unexpected reply {r:?}"),
@@ -255,27 +343,40 @@ async fn main() -> Result<()> {
                 match call(IpcRequest::SetupCapture, Duration::from_secs(180)).await {
                     Ok(IpcResponse::Ok(m)) => println!("          ✓ {m}"),
                     Ok(_) => {}
-                    Err(e) => println!("          ! capture setup failed: {e:#}\n            (pairing continues; video will be unavailable until fixed)"),
+                    Err(e) => println!(
+                        "          ! capture setup failed: {e:#}\n            (pairing continues; video will be unavailable until fixed)"
+                    ),
                 }
             }
             let before: Vec<String> = match call(IpcRequest::List, short).await? {
-                IpcResponse::Devices(d) => d.into_iter().map(|d| format!("{}:{}", d.id, d.paired_at)).collect(),
+                IpcResponse::Devices(d) => d
+                    .into_iter()
+                    .map(|d| format!("{}:{}", d.id, d.paired_at))
+                    .collect(),
                 _ => vec![],
             };
             let (uri, ttl) = match call(IpcRequest::Pair, short).await? {
                 IpcResponse::Pairing { uri, ttl_secs } => (uri, ttl_secs),
                 r => bail!("unexpected reply {r:?}"),
             };
-            println!("\nStep 2/2: scan with the DiShus app (Pair new PC). Valid for {ttl} s, single use.\n");
+            println!(
+                "\nStep 2/2: scan with the DiShus app (Pair new PC). Valid for {ttl} s, single use.\n"
+            );
             print_qr(&uri)?;
             println!("Or paste this link into the app (it is a secret, don't share it):\n{uri}\n");
             let deadline = std::time::Instant::now() + Duration::from_secs(ttl);
             loop {
                 tokio::time::sleep(Duration::from_millis(700)).await;
                 if let Ok(IpcResponse::Devices(d)) = call(IpcRequest::List, short).await
-                    && let Some(n) = d.iter().find(|d| !before.contains(&format!("{}:{}", d.id, d.paired_at)))
+                    && let Some(n) = d
+                        .iter()
+                        .find(|d| !before.contains(&format!("{}:{}", d.id, d.paired_at)))
                 {
-                    println!("✓ Paired \"{}\" — expires in {}", n.name, human_until(n.expires_at));
+                    println!(
+                        "✓ Paired \"{}\" — expires in {}",
+                        n.name,
+                        human_until(n.expires_at)
+                    );
                     break;
                 }
                 if std::time::Instant::now() > deadline {

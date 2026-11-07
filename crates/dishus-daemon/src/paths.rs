@@ -138,7 +138,9 @@ pub fn read_private(path: &Path) -> Result<Option<Vec<u8>>> {
     if std::os::unix::fs::MetadataExt::uid(&meta) != uid {
         bail!("{} is not owned by the current user", path.display());
     }
-    Ok(Some(fs::read(path).with_context(|| format!("reading {}", path.display()))?))
+    Ok(Some(
+        fs::read(path).with_context(|| format!("reading {}", path.display()))?,
+    ))
 }
 
 #[cfg(test)]
@@ -150,9 +152,16 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let p = t.path().join("a/b/secret");
         write_private(&p, b"hi").unwrap();
-        assert_eq!(fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
         assert_eq!(
-            fs::metadata(p.parent().unwrap()).unwrap().permissions().mode() & 0o777,
+            fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(p.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
             0o700
         );
         assert_eq!(read_private(&p).unwrap().unwrap(), b"hi");

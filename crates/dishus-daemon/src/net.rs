@@ -11,9 +11,7 @@ use iroh::{
 };
 use tokio::time::timeout;
 
-use dishus_proto::{
-    ALPN_PAIR, ALPN_SESSION, PairRequest, PairingInfo, read_frame, write_frame,
-};
+use dishus_proto::{ALPN_PAIR, ALPN_SESSION, PairRequest, PairingInfo, read_frame, write_frame};
 
 use crate::{
     gate::{Gate, incoming_filter},
@@ -60,7 +58,10 @@ pub async fn bind_endpoint(
     };
     b = b.secret_key(secret_key).relay_mode(opts.relay_mode.clone());
     if let Some(a) = opts.bind_addr {
-        b = b.clear_ip_transports().bind_addr(a).context("bind address")?;
+        b = b
+            .clear_ip_transports()
+            .bind_addr(a)
+            .context("bind address")?;
     }
     if let Some(h) = hooks {
         b = b.hooks(h);
@@ -68,7 +69,11 @@ pub async fn bind_endpoint(
     Ok(b.bind().await?)
 }
 
-pub async fn spawn_router(state: Arc<AppState>, secret_key: SecretKey, opts: &NetOptions) -> Result<Router> {
+pub async fn spawn_router(
+    state: Arc<AppState>,
+    secret_key: SecretKey,
+    opts: &NetOptions,
+) -> Result<Router> {
     let ep = bind_endpoint(secret_key, opts, Some(Gate(state.clone()))).await?;
     Ok(Router::builder(ep)
         .incoming_filter(incoming_filter(state.clone()))
@@ -85,7 +90,12 @@ pub fn pairing_info(ep: &Endpoint, state: &AppState, token: [u8; 32]) -> Pairing
         token,
         pc_name: state.config.pc_name.clone(),
         relays: addr.relay_urls().take(4).map(|u| u.to_string()).collect(),
-        addrs: addr.ip_addrs().filter(|a| !a.ip().is_loopback()).take(6).map(|a| a.to_string()).collect(),
+        addrs: addr
+            .ip_addrs()
+            .filter(|a| !a.ip().is_loopback())
+            .take(6)
+            .map(|a| a.to_string())
+            .collect(),
     }
 }
 
@@ -122,8 +132,11 @@ impl ProtocolHandler for PairHandler {
         let peer = conn.remote_id();
         let res: Result<()> = async {
             let (mut send, mut recv) = timeout(Duration::from_secs(10), conn.accept_bi()).await??;
-            let req: PairRequest =
-                timeout(Duration::from_secs(10), read_frame(&mut recv, PAIR_FRAME_CAP)).await??;
+            let req: PairRequest = timeout(
+                Duration::from_secs(10),
+                read_frame(&mut recv, PAIR_FRAME_CAP),
+            )
+            .await??;
             let resp = self.0.try_pair(&peer, &req);
             drop(req);
             write_frame(&mut send, &resp, PAIR_FRAME_CAP).await?;

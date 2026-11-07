@@ -1,0 +1,57 @@
+[Unit]
+Description=DiShus remote control daemon (phone -> this PC)
+Documentation=https://github.com/dishus/dishus
+# Not bound to graphical-session.target on purpose: Hyprland without uwsm never starts it.
+# Networking and input work without a graphical session; screen capture is opened lazily per
+# connection through the portal.
+After=dbus.socket pipewire.service xdg-desktop-portal.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/dishus-daemon
+Restart=on-failure
+RestartSec=3
+Environment=DISHUS_LOG=info
+
+# State lives in ~/.config/dishus (config, devices, identity), ~/.local/state/dishus
+# (portal token, lockdown flag) and $XDG_RUNTIME_DIR/dishus (control socket).
+ConfigurationDirectory=dishus
+ConfigurationDirectoryMode=0700
+StateDirectory=dishus
+StateDirectoryMode=0700
+RuntimeDirectory=dishus
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=no
+UMask=0077
+
+# --- hardening (as far as screen capture, NVENC and /dev/uinput allow) ---
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+# Home is read-only except the directories above. (Needs unprivileged user namespaces, which
+# Arch enables; on systems without them systemd ignores these for user units.)
+ProtectHome=read-only
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# AF_NETLINK: interface/route monitoring for connectivity changes (iroh netwatch).
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+# Not set, with reasons:
+#  PrivateDevices=   would hide /dev/uinput, /dev/nvidia*, /dev/dri
+#  MemoryDenyWriteExecute= the NVIDIA/CUDA user-space driver JIT-compiles and needs W+X pages
+#  PrivateNetwork=   it's a network service
+#  ProtectProc=/ProcSubset= only effective for system units
+
+[Install]
+WantedBy=default.target

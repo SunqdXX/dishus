@@ -33,9 +33,15 @@ impl WorkerProvider {
         Ok(Self {
             exe,
             env: vec![
-                ("DISHUS_W_TOKEN_FILE".into(), token_file.to_string_lossy().into_owned()),
+                (
+                    "DISHUS_W_TOKEN_FILE".into(),
+                    token_file.to_string_lossy().into_owned(),
+                ),
                 ("DISHUS_W_ENCODER".into(), encoder_pref.into()),
-                ("DISHUS_W_CURSOR".into(), if show_cursor { "1" } else { "0" }.into()),
+                (
+                    "DISHUS_W_CURSOR".into(),
+                    if show_cursor { "1" } else { "0" }.into(),
+                ),
             ],
         })
     }
@@ -56,7 +62,9 @@ impl WorkerProvider {
     async fn one_shot(&self, mode: &str) -> Result<String> {
         let mut child = self.spawn(mode)?;
         let mut out = child.stdout.take().context("worker stdout")?;
-        let ev: WorkerEvent = read_frame(&mut out, MAX_WORKER_FRAME).await.map_err(|e| anyhow!("worker: {e}"))?;
+        let ev: WorkerEvent = read_frame(&mut out, MAX_WORKER_FRAME)
+            .await
+            .map_err(|e| anyhow!("worker: {e}"))?;
         let _ = child.wait().await;
         match ev {
             WorkerEvent::Info(s) => Ok(s),
@@ -81,8 +89,9 @@ impl CaptureProvider for WorkerProvider {
             let mut stdout = child.stdout.take().context("worker stdout")?;
             let mut stdin = child.stdin.take().context("worker stdin")?;
             // First event: Monitors or Failed.
-            let first: WorkerEvent =
-                read_frame(&mut stdout, MAX_WORKER_FRAME).await.map_err(|e| anyhow!("capture worker: {e}"))?;
+            let first: WorkerEvent = read_frame(&mut stdout, MAX_WORKER_FRAME)
+                .await
+                .map_err(|e| anyhow!("capture worker: {e}"))?;
             let monitors = match first {
                 WorkerEvent::Monitors(m) if !m.is_empty() => m,
                 WorkerEvent::Monitors(_) => bail!("capture worker found no monitors"),
@@ -195,7 +204,11 @@ impl CaptureSession for WorkerSession {
             let mut events = self.events.clone().lock_owned().await;
             let (width, height, encoder) = loop {
                 match events.recv().await {
-                    Some(WorkerEvent::Started { width, height, encoder }) => break (width, height, encoder),
+                    Some(WorkerEvent::Started {
+                        width,
+                        height,
+                        encoder,
+                    }) => break (width, height, encoder),
                     Some(WorkerEvent::Failed(s)) => bail!("{s}"),
                     Some(_) => continue, // stale frames from a previous pipeline
                     None => bail!("capture worker exited"),
@@ -205,8 +218,20 @@ impl CaptureSession for WorkerSession {
             let forwarder = tokio::spawn(async move {
                 while let Some(ev) = events.recv().await {
                     match ev {
-                        WorkerEvent::Frame { pts_us, keyframe, data } => {
-                            if tx.send(VideoFrame { data: Bytes::from(data), pts_us, keyframe }).await.is_err() {
+                        WorkerEvent::Frame {
+                            pts_us,
+                            keyframe,
+                            data,
+                        } => {
+                            if tx
+                                .send(VideoFrame {
+                                    data: Bytes::from(data),
+                                    pts_us,
+                                    keyframe,
+                                })
+                                .await
+                                .is_err()
+                            {
                                 break;
                             }
                         }
@@ -224,7 +249,10 @@ impl CaptureSession for WorkerSession {
                 width,
                 height,
                 encoder,
-                _guard: Box::new(StreamGuard { cmd: self.cmd_tx.clone(), forwarder }),
+                _guard: Box::new(StreamGuard {
+                    cmd: self.cmd_tx.clone(),
+                    forwarder,
+                }),
             })
         })
     }

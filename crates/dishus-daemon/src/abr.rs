@@ -24,7 +24,11 @@ pub fn bounds(q: Quality, ceiling: u32) -> Bounds {
         Quality::Auto => (500, 6_000, u32::MAX),
     };
     let max = max.min(ceiling).max(min);
-    Bounds { min, start: start.min(max), max }
+    Bounds {
+        min,
+        start: start.min(max),
+        max,
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -54,7 +58,13 @@ impl Abr {
     /// `fps == 0` means adaptive.
     pub fn new(b: Bounds, fps: u8) -> Self {
         let adaptive_fps = fps == 0;
-        Self { b, bitrate: b.start, adaptive_fps, fps: if adaptive_fps { 30 } else { fps }, good_ticks: 0 }
+        Self {
+            b,
+            bitrate: b.start,
+            adaptive_fps,
+            fps: if adaptive_fps { 30 } else { fps },
+            good_ticks: 0,
+        }
     }
 
     pub fn tick(&mut self, s: TickStats) -> Change {
@@ -68,7 +78,7 @@ impl Abr {
             }
         } else {
             self.good_ticks = self.good_ticks.saturating_add(1);
-            if self.good_ticks % 4 == 0 {
+            if self.good_ticks.is_multiple_of(4) {
                 self.bitrate = ((self.bitrate as u64 * 115 / 100) as u32).min(self.b.max);
             }
             if self.adaptive_fps
@@ -94,10 +104,16 @@ mod tests {
     fn backs_off_and_recovers() {
         let mut a = Abr::new(bounds(Quality::Auto, 20_000), 0);
         assert_eq!((a.bitrate, a.fps), (6_000, 30));
-        let c = a.tick(TickStats { dropped: 2, ..Default::default() });
+        let c = a.tick(TickStats {
+            dropped: 2,
+            ..Default::default()
+        });
         assert_eq!(c.bitrate, Some(4_200));
         for _ in 0..20 {
-            a.tick(TickStats { dropped: 5, ..Default::default() });
+            a.tick(TickStats {
+                dropped: 5,
+                ..Default::default()
+            });
         }
         assert_eq!(a.bitrate, 500, "floors at min");
         for _ in 0..200 {
@@ -105,7 +121,10 @@ mod tests {
         }
         assert_eq!(a.bitrate, 20_000, "caps at max");
         assert_eq!(a.fps, 60, "adaptive fps climbs to 60 when clean");
-        let c = a.tick(TickStats { stalled: 1, ..Default::default() });
+        let c = a.tick(TickStats {
+            stalled: 1,
+            ..Default::default()
+        });
         assert_eq!(c.fps, Some(30), "drops to 30 on trouble");
     }
 
@@ -115,14 +134,28 @@ mod tests {
         for _ in 0..100 {
             assert_eq!(a.tick(TickStats::default()).fps, None);
         }
-        assert_eq!(a.tick(TickStats { dropped: 1, ..Default::default() }).fps, None);
+        assert_eq!(
+            a.tick(TickStats {
+                dropped: 1,
+                ..Default::default()
+            })
+            .fps,
+            None
+        );
         assert_eq!(a.fps, 45);
     }
 
     #[test]
     fn bounds_respect_ceiling() {
         let b = bounds(Quality::High, 2_000);
-        assert_eq!(b, Bounds { min: 1_000, start: 2_000, max: 2_000 });
+        assert_eq!(
+            b,
+            Bounds {
+                min: 1_000,
+                start: 2_000,
+                max: 2_000
+            }
+        );
         let b = bounds(Quality::Low, 100);
         assert!(b.max >= b.min);
     }

@@ -44,8 +44,15 @@ impl EndpointHooks for Gate {
         if admit(&self.0, conn.alpn(), &peer) {
             AfterHandshakeOutcome::Accept
         } else {
-            tracing::debug!("gate: dropped {} (alpn {:?})", peer.fmt_short(), String::from_utf8_lossy(conn.alpn()));
-            AfterHandshakeOutcome::Reject { error_code: 0u32.into(), reason: Vec::new() }
+            tracing::debug!(
+                "gate: dropped {} (alpn {:?})",
+                peer.fmt_short(),
+                String::from_utf8_lossy(conn.alpn())
+            );
+            AfterHandshakeOutcome::Reject {
+                error_code: 0u32.into(),
+                reason: Vec::new(),
+            }
         }
     }
 }
@@ -64,7 +71,12 @@ pub fn incoming_filter(state: Arc<AppState>) -> iroh::protocol::IncomingFilter {
             if !incoming.remote_addr_validated() {
                 return IncomingFilterOutcome::Retry;
             }
-            if state.limiter.lock().expect("limiter").allow(addr.ip(), Instant::now()) {
+            if state
+                .limiter
+                .lock()
+                .expect("limiter")
+                .allow(addr.ip(), Instant::now())
+            {
                 IncomingFilterOutcome::Accept
             } else {
                 IncomingFilterOutcome::Ignore

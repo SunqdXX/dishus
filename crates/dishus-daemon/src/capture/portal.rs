@@ -56,10 +56,17 @@ pub async fn open(opts: &WorkerOptions, interactive: bool) -> Result<PortalSessi
         .map(|s| s.trim().to_owned())
         .filter(|s| !s.is_empty() && s.len() < 512);
 
-    let proxy = Screencast::new().await.map_err(|e| PortalError::Unavailable(e.to_string()))?;
-    let types = proxy.available_source_types().await.map_err(|e| PortalError::Unavailable(e.to_string()))?;
+    let proxy = Screencast::new()
+        .await
+        .map_err(|e| PortalError::Unavailable(e.to_string()))?;
+    let types = proxy
+        .available_source_types()
+        .await
+        .map_err(|e| PortalError::Unavailable(e.to_string()))?;
     if !types.contains(SourceType::MONITOR) {
-        return Err(PortalError::Unavailable("portal cannot capture monitors".into()));
+        return Err(PortalError::Unavailable(
+            "portal cannot capture monitors".into(),
+        ));
     }
     if !interactive && token.is_none() {
         return Err(PortalError::Other(anyhow!(
@@ -85,7 +92,10 @@ pub async fn open(opts: &WorkerOptions, interactive: bool) -> Result<PortalSessi
         )
         .await?
         .response()?;
-    let resp = proxy.start(&session, None, Default::default()).await?.response()?;
+    let resp = proxy
+        .start(&session, None, Default::default())
+        .await?
+        .response()?;
     match resp.restore_token() {
         Some(t) => {
             if let Err(e) = write_private(&opts.token_file, t.as_bytes()) {
@@ -98,12 +108,28 @@ pub async fn open(opts: &WorkerOptions, interactive: bool) -> Result<PortalSessi
         ),
     }
     let mut streams = Vec::new();
-    for (i, s) in resp.streams().iter().enumerate().take(dishus_proto::MAX_MONITORS) {
-        let (w, h) = s.size().map(|(w, h)| (w.max(0) as u32, h.max(0) as u32)).unwrap_or((0, 0));
-        let pos = s.position().map(|(x, y)| format!(" @{x},{y}")).unwrap_or_default();
+    for (i, s) in resp
+        .streams()
+        .iter()
+        .enumerate()
+        .take(dishus_proto::MAX_MONITORS)
+    {
+        let (w, h) = s
+            .size()
+            .map(|(w, h)| (w.max(0) as u32, h.max(0) as u32))
+            .unwrap_or((0, 0));
+        let pos = s
+            .position()
+            .map(|(x, y)| format!(" @{x},{y}"))
+            .unwrap_or_default();
         streams.push(PwStream {
             node: s.pipe_wire_node_id(),
-            info: MonitorInfo { index: i as u8, name: format!("Monitor {} {w}x{h}{pos}", i + 1), width: w, height: h },
+            info: MonitorInfo {
+                index: i as u8,
+                name: format!("Monitor {} {w}x{h}{pos}", i + 1),
+                width: w,
+                height: h,
+            },
         });
     }
     if streams.is_empty() {
@@ -115,7 +141,11 @@ pub async fn open(opts: &WorkerOptions, interactive: bool) -> Result<PortalSessi
         .await
         .context("opening PipeWire remote")
         .map_err(PortalError::Other)?;
-    Ok(PortalSession { session: Some(session), fd, streams })
+    Ok(PortalSession {
+        session: Some(session),
+        fd,
+        streams,
+    })
 }
 
 impl PortalSession {
@@ -125,7 +155,16 @@ impl PortalSession {
 
     /// PipeWire source for monitor `idx`, plus its height (for "don't upscale").
     pub fn source(&self, idx: u8) -> anyhow::Result<(Source, Option<u32>)> {
-        let s = self.streams.get(usize::from(idx)).context("no such monitor")?;
-        Ok((Source::PipeWire { fd: self.fd.try_clone()?, node: s.node }, (s.info.height > 0).then_some(s.info.height)))
+        let s = self
+            .streams
+            .get(usize::from(idx))
+            .context("no such monitor")?;
+        Ok((
+            Source::PipeWire {
+                fd: self.fd.try_clone()?,
+                node: s.node,
+            },
+            (s.info.height > 0).then_some(s.info.height),
+        ))
     }
 }

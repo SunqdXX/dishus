@@ -34,7 +34,11 @@ pub struct TrackedInput {
 
 impl TrackedInput {
     pub fn new(sink: Box<dyn InputSink>) -> Self {
-        Self { sink, keys: BTreeSet::new(), buttons: Vec::new() }
+        Self {
+            sink,
+            keys: BTreeSet::new(),
+            buttons: Vec::new(),
+        }
     }
 
     pub fn key(&mut self, code: u16, down: bool) -> std::io::Result<()> {
@@ -178,11 +182,17 @@ mod tests {
     struct Rec(Arc<Mutex<Vec<String>>>);
     impl InputSink for Rec {
         fn key(&mut self, c: u16, d: bool) -> std::io::Result<()> {
-            self.0.lock().unwrap().push(format!("k{c}{}", if d { "+" } else { "-" }));
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("k{c}{}", if d { "+" } else { "-" }));
             Ok(())
         }
         fn button(&mut self, b: MouseButton, d: bool) -> std::io::Result<()> {
-            self.0.lock().unwrap().push(format!("{b:?}{}", if d { "+" } else { "-" }));
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("{b:?}{}", if d { "+" } else { "-" }));
             Ok(())
         }
         fn motion(&mut self, _: i32, _: i32) -> std::io::Result<()> {
@@ -211,7 +221,9 @@ mod tests {
         let log = rec.0.lock().unwrap().clone();
         assert_eq!(
             log,
-            vec!["k125+", "k29+", "k30+", "k30-", "Left+", "Left+", "k125-", "k29-", "Left-"]
+            vec![
+                "k125+", "k29+", "k30+", "k30-", "Left+", "Left+", "k125-", "k29-", "Left-"
+            ]
         );
     }
 }

@@ -15,8 +15,13 @@ pub enum IpcRequest {
     /// Open the pairing window and return the pairing link.
     Pair,
     ClosePairing,
-    Revoke { selector: String },
-    Renew { selector: String, days: u16 },
+    Revoke {
+        selector: String,
+    },
+    Renew {
+        selector: String,
+        days: u16,
+    },
     /// Cut every session and lock down until `Unlock`.
     Kill,
     Unlock,

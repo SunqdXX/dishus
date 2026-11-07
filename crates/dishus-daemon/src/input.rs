@@ -51,7 +51,11 @@ impl UinputSink {
             .with_keys(&buttons)?
             .with_relative_axes(&axes)?
             .build()?;
-        Ok(Self { kbd, mouse, wheel_acc: (0, 0) })
+        Ok(Self {
+            kbd,
+            mouse,
+            wheel_acc: (0, 0),
+        })
     }
 }
 
@@ -74,7 +78,8 @@ impl InputSink for UinputSink {
             MouseButton::Right => KeyCode::BTN_RIGHT,
             MouseButton::Middle => KeyCode::BTN_MIDDLE,
         };
-        self.mouse.emit(&[ev(EventType::KEY, code.0, i32::from(down))])
+        self.mouse
+            .emit(&[ev(EventType::KEY, code.0, i32::from(down))])
     }
 
     fn motion(&mut self, dx: i32, dy: i32) -> std::io::Result<()> {
@@ -85,7 +90,11 @@ impl InputSink for UinputSink {
         if dy != 0 {
             evs.push(ev(EventType::RELATIVE, RelativeAxisCode::REL_Y.0, dy));
         }
-        if evs.is_empty() { Ok(()) } else { self.mouse.emit(&evs) }
+        if evs.is_empty() {
+            Ok(())
+        } else {
+            self.mouse.emit(&evs)
+        }
     }
 
     fn scroll(&mut self, dx: i32, dy: i32) -> std::io::Result<()> {
@@ -93,23 +102,43 @@ impl InputSink for UinputSink {
         let (vy, vx) = (-dy, dx);
         let mut evs = Vec::with_capacity(4);
         if vy != 0 {
-            evs.push(ev(EventType::RELATIVE, RelativeAxisCode::REL_WHEEL_HI_RES.0, vy));
+            evs.push(ev(
+                EventType::RELATIVE,
+                RelativeAxisCode::REL_WHEEL_HI_RES.0,
+                vy,
+            ));
             self.wheel_acc.1 += vy;
             let clicks = self.wheel_acc.1 / 120;
             if clicks != 0 {
                 self.wheel_acc.1 -= clicks * 120;
-                evs.push(ev(EventType::RELATIVE, RelativeAxisCode::REL_WHEEL.0, clicks));
+                evs.push(ev(
+                    EventType::RELATIVE,
+                    RelativeAxisCode::REL_WHEEL.0,
+                    clicks,
+                ));
             }
         }
         if vx != 0 {
-            evs.push(ev(EventType::RELATIVE, RelativeAxisCode::REL_HWHEEL_HI_RES.0, vx));
+            evs.push(ev(
+                EventType::RELATIVE,
+                RelativeAxisCode::REL_HWHEEL_HI_RES.0,
+                vx,
+            ));
             self.wheel_acc.0 += vx;
             let clicks = self.wheel_acc.0 / 120;
             if clicks != 0 {
                 self.wheel_acc.0 -= clicks * 120;
-                evs.push(ev(EventType::RELATIVE, RelativeAxisCode::REL_HWHEEL.0, clicks));
+                evs.push(ev(
+                    EventType::RELATIVE,
+                    RelativeAxisCode::REL_HWHEEL.0,
+                    clicks,
+                ));
             }
         }
-        if evs.is_empty() { Ok(()) } else { self.mouse.emit(&evs) }
+        if evs.is_empty() {
+            Ok(())
+        } else {
+            self.mouse.emit(&evs)
+        }
     }
 }

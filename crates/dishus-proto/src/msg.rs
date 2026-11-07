@@ -40,7 +40,12 @@ pub struct StreamParams {
 
 impl Default for StreamParams {
     fn default() -> Self {
-        Self { monitor: 0, fps: 0, quality: Quality::Auto, max_height: 0 }
+        Self {
+            monitor: 0,
+            fps: 0,
+            quality: Quality::Auto,
+            max_height: 0,
+        }
     }
 }
 
@@ -63,29 +68,53 @@ impl Validate for StreamParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClientMsg {
     /// Must be the first message.
-    Hello { proto_version: u16, device_name: String, stream: StreamParams },
+    Hello {
+        proto_version: u16,
+        device_name: String,
+        stream: StreamParams,
+    },
     /// Heartbeat; `t` is echoed back in `Pong` for RTT measurement.
-    Ping { t: u64 },
+    Ping {
+        t: u64,
+    },
     /// Linux evdev keycode press/release.
-    Key { code: u16, down: bool },
+    Key {
+        code: u16,
+        down: bool,
+    },
     /// Relative pointer motion in pixels.
-    MouseMove { dx: i16, dy: i16 },
-    MouseButton { button: MouseButton, down: bool },
+    MouseMove {
+        dx: i16,
+        dy: i16,
+    },
+    MouseButton {
+        button: MouseButton,
+        down: bool,
+    },
     /// High-resolution scroll; 120 = one wheel notch. Positive dy = scroll down.
-    Scroll { dx: i16, dy: i16 },
+    Scroll {
+        dx: i16,
+        dy: i16,
+    },
     /// Release every pressed key and button (phone lost focus, app backgrounded, ...).
     ReleaseAll,
     RequestKeyframe,
     SetStream(StreamParams),
     /// Extend this phone's pairing to now + `days` (1..=60). Only valid inside a session.
-    RenewPairing { days: u16 },
+    RenewPairing {
+        days: u16,
+    },
     Bye,
 }
 
 impl Validate for ClientMsg {
     fn validate(&self) -> Result<(), &'static str> {
         match self {
-            ClientMsg::Hello { proto_version, device_name, stream } => {
+            ClientMsg::Hello {
+                proto_version,
+                device_name,
+                stream,
+            } => {
                 if *proto_version != PROTO_VERSION {
                     return Err("unsupported protocol version");
                 }
@@ -95,7 +124,11 @@ impl Validate for ClientMsg {
                 stream.validate()
             }
             ClientMsg::Key { code, .. } => {
-                if keys::is_allowed_keycode(*code) { Ok(()) } else { Err("keycode not allowed") }
+                if keys::is_allowed_keycode(*code) {
+                    Ok(())
+                } else {
+                    Err("keycode not allowed")
+                }
             }
             ClientMsg::MouseMove { dx, dy } => {
                 // Larger jumps are never produced by a finger; reject instead of clamping so a
@@ -115,7 +148,11 @@ impl Validate for ClientMsg {
             }
             ClientMsg::SetStream(p) => p.validate(),
             ClientMsg::RenewPairing { days } => {
-                if (1..=MAX_EXPIRY_DAYS).contains(days) { Ok(()) } else { Err("days out of range") }
+                if (1..=MAX_EXPIRY_DAYS).contains(days) {
+                    Ok(())
+                } else {
+                    Err("days out of range")
+                }
             }
             ClientMsg::Ping { .. }
             | ClientMsg::MouseButton { .. }
@@ -166,18 +203,39 @@ pub enum ServerMsg {
         /// Unix seconds at which this phone's pairing expires.
         expires_at: u64,
     },
-    Pong { t: u64 },
+    Pong {
+        t: u64,
+    },
     /// A (new) video stream starts with the next frame, which is always a keyframe.
-    StreamInfo { monitor: u8, width: u32, height: u32, fps: u8, bitrate_kbps: u32, encoder: String },
-    Renewed { expires_at: u64 },
-    Notice { kind: NoticeKind, message: String },
-    Bye { reason: ByeReason },
+    StreamInfo {
+        monitor: u8,
+        width: u32,
+        height: u32,
+        fps: u8,
+        bitrate_kbps: u32,
+        encoder: String,
+    },
+    Renewed {
+        expires_at: u64,
+    },
+    Notice {
+        kind: NoticeKind,
+        message: String,
+    },
+    Bye {
+        reason: ByeReason,
+    },
 }
 
 impl Validate for ServerMsg {
     fn validate(&self) -> Result<(), &'static str> {
         match self {
-            ServerMsg::Welcome { proto_version, pc_name, monitors, .. } => {
+            ServerMsg::Welcome {
+                proto_version,
+                pc_name,
+                monitors,
+                ..
+            } => {
                 if *proto_version != PROTO_VERSION {
                     return Err("unsupported protocol version");
                 }
@@ -194,7 +252,13 @@ impl Validate for ServerMsg {
                 }
                 Ok(())
             }
-            ServerMsg::StreamInfo { width, height, fps, encoder, .. } => {
+            ServerMsg::StreamInfo {
+                width,
+                height,
+                fps,
+                encoder,
+                ..
+            } => {
                 if *width > 16384 || *height > 16384 || *fps > 240 || !valid_name(encoder) {
                     Err("bad stream info")
                 } else {
@@ -202,7 +266,11 @@ impl Validate for ServerMsg {
                 }
             }
             ServerMsg::Notice { message, .. } => {
-                if message.len() > MAX_ERROR_LEN { Err("notice too long") } else { Ok(()) }
+                if message.len() > MAX_ERROR_LEN {
+                    Err("notice too long")
+                } else {
+                    Ok(())
+                }
             }
             ServerMsg::Pong { .. } | ServerMsg::Renewed { .. } | ServerMsg::Bye { .. } => Ok(()),
         }
@@ -249,7 +317,10 @@ impl Validate for PairRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PairResponse {
-    Accepted { pc_name: String, expires_at: u64 },
+    Accepted {
+        pc_name: String,
+        expires_at: u64,
+    },
     /// Deliberately carries no reason.
     Rejected,
 }
@@ -314,14 +385,39 @@ mod tests {
 
     #[test]
     fn mouse_bounds() {
-        assert!(ClientMsg::MouseMove { dx: 4096, dy: -4096 }.validate().is_ok());
-        assert!(ClientMsg::MouseMove { dx: i16::MIN, dy: 0 }.validate().is_err());
-        assert!(ClientMsg::Scroll { dx: 0, dy: 120 * 21 }.validate().is_err());
+        assert!(
+            ClientMsg::MouseMove {
+                dx: 4096,
+                dy: -4096
+            }
+            .validate()
+            .is_ok()
+        );
+        assert!(
+            ClientMsg::MouseMove {
+                dx: i16::MIN,
+                dy: 0
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            ClientMsg::Scroll {
+                dx: 0,
+                dy: 120 * 21
+            }
+            .validate()
+            .is_err()
+        );
     }
 
     #[test]
     fn pair_request_debug_hides_token() {
-        let r = PairRequest { proto_version: 1, token: [0xAB; 32], device_name: "p".into() };
+        let r = PairRequest {
+            proto_version: 1,
+            token: [0xAB; 32],
+            device_name: "p".into(),
+        };
         let s = format!("{r:?}");
         assert!(!s.to_lowercase().contains("ab, "), "{s}");
         assert!(!s.contains("171"), "{s}");

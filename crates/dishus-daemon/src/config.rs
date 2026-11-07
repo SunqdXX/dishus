@@ -40,7 +40,11 @@ pub struct VideoConfig {
 
 impl Default for VideoConfig {
     fn default() -> Self {
-        Self { encoder: "auto".into(), max_bitrate_kbps: 20_000, show_cursor: true }
+        Self {
+            encoder: "auto".into(),
+            max_bitrate_kbps: 20_000,
+            show_cursor: true,
+        }
     }
 }
 
@@ -63,7 +67,12 @@ pub fn hostname() -> String {
         .ok()
         .map(|s| s.trim().to_owned())
         .filter(|s| valid_name(s))
-        .unwrap_or_else(|| rustix::system::uname().nodename().to_string_lossy().into_owned());
+        .unwrap_or_else(|| {
+            rustix::system::uname()
+                .nodename()
+                .to_string_lossy()
+                .into_owned()
+        });
     let mut s: String = raw.chars().filter(|c| !c.is_control()).take(64).collect();
     if s.is_empty() {
         s = "Linux PC".into();
@@ -111,7 +120,10 @@ impl Config {
 
     pub fn save(&self, paths: &Paths) -> Result<()> {
         self.validate()?;
-        write_private(&paths.config_file(), toml::to_string_pretty(self)?.as_bytes())
+        write_private(
+            &paths.config_file(),
+            toml::to_string_pretty(self)?.as_bytes(),
+        )
     }
 
     pub fn relay_mode(&self) -> Result<iroh::RelayMode> {
@@ -124,7 +136,10 @@ impl Config {
         let urls = self
             .relays
             .iter()
-            .map(|r| r.parse::<iroh::RelayUrl>().with_context(|| format!("bad relay url {r}")))
+            .map(|r| {
+                r.parse::<iroh::RelayUrl>()
+                    .with_context(|| format!("bad relay url {r}"))
+            })
             .collect::<Result<Vec<_>>>()?;
         Ok(iroh::RelayMode::custom(urls))
     }
@@ -144,21 +159,30 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let p = Paths::under(t.path());
         assert_eq!(Config::load(&p).unwrap(), Config::default());
-        let mut c = Config::default();
-        c.relays = vec!["https://relay.example.org/".into()];
-        c.expiry_days = 60;
+        let c = Config {
+            relays: vec!["https://relay.example.org/".into()],
+            expiry_days: 60,
+            ..Default::default()
+        };
         c.save(&p).unwrap();
         assert_eq!(Config::load(&p).unwrap(), c);
-        assert!(matches!(c.relay_mode().unwrap(), iroh::RelayMode::Custom(_)));
+        assert!(matches!(
+            c.relay_mode().unwrap(),
+            iroh::RelayMode::Custom(_)
+        ));
     }
 
     #[test]
     fn rejects_bad() {
-        let mut c = Config::default();
-        c.expiry_days = 61;
+        let c = Config {
+            expiry_days: 61,
+            ..Default::default()
+        };
         assert!(c.validate().is_err());
-        let mut c = Config::default();
-        c.relays = vec!["ftp://x".into()];
+        let c = Config {
+            relays: vec!["ftp://x".into()],
+            ..Default::default()
+        };
         assert!(c.validate().is_err());
         assert!(toml::from_str::<Config>("bogus_key = 1").is_err());
     }

@@ -7,8 +7,9 @@ use iroh::Endpoint;
 use tokio::{net::UnixListener, time::timeout};
 
 use dishus_proto::{
-    PairingInfo, read_frame, write_frame,
+    PairingInfo,
     ipc::{IpcDevice, IpcRequest, IpcResponse, IpcSession, IpcStatus, MAX_IPC_FRAME},
+    read_frame, write_frame,
 };
 
 use crate::{net::pairing_info, state::AppState};
@@ -25,11 +26,15 @@ pub async fn serve(ctx: Arc<IpcContext>) -> Result<()> {
     // A stale socket from a crashed daemon: only remove it if nothing answers.
     if path.exists() {
         if tokio::net::UnixStream::connect(&path).await.is_ok() {
-            bail!("another dishus-daemon is already running ({})", path.display());
+            bail!(
+                "another dishus-daemon is already running ({})",
+                path.display()
+            );
         }
         std::fs::remove_file(&path).ok();
     }
-    let listener = UnixListener::bind(&path).with_context(|| format!("binding {}", path.display()))?;
+    let listener =
+        UnixListener::bind(&path).with_context(|| format!("binding {}", path.display()))?;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
     let my_uid = rustix::process::getuid().as_raw();
     loop {
@@ -44,8 +49,11 @@ pub async fn serve(ctx: Arc<IpcContext>) -> Result<()> {
         let ctx = ctx.clone();
         tokio::spawn(async move {
             let res: Result<()> = async {
-                let req: IpcRequest =
-                    timeout(Duration::from_secs(5), read_frame(&mut stream, MAX_IPC_FRAME)).await??;
+                let req: IpcRequest = timeout(
+                    Duration::from_secs(5),
+                    read_frame(&mut stream, MAX_IPC_FRAME),
+                )
+                .await??;
                 let resp = handle(&ctx, req).await;
                 write_frame(&mut stream, &resp, MAX_IPC_FRAME).await?;
                 Ok(())
@@ -70,7 +78,12 @@ async fn handle(ctx: &IpcContext, req: IpcRequest) -> IpcResponse {
             let sessions = st
                 .sessions()
                 .into_iter()
-                .map(|s| IpcSession { id: s.peer.to_string(), name: s.name, since: s.since, path: s.path })
+                .map(|s| IpcSession {
+                    id: s.peer.to_string(),
+                    name: s.name,
+                    since: s.since,
+                    path: s.path,
+                })
                 .collect();
             IpcResponse::Status(IpcStatus {
                 version: env!("CARGO_PKG_VERSION").into(),
@@ -110,8 +123,14 @@ async fn handle(ctx: &IpcContext, req: IpcRequest) -> IpcResponse {
                 // Make sure we have a relay/addresses to put in the link.
                 let _ = timeout(Duration::from_secs(5), ctx.endpoint.online()).await;
                 let info: PairingInfo = pairing_info(&ctx.endpoint, st, *token);
-                st.notifier.notify("DiShus: pairing open", &format!("for {} seconds", ttl.as_secs()));
-                IpcResponse::Pairing { uri: info.to_uri(), ttl_secs: ttl.as_secs() }
+                st.notifier.notify(
+                    "DiShus: pairing open",
+                    &format!("for {} seconds", ttl.as_secs()),
+                );
+                IpcResponse::Pairing {
+                    uri: info.to_uri(),
+                    ttl_secs: ttl.as_secs(),
+                }
             }
             Err(e) => err(e),
         },
@@ -128,8 +147,12 @@ async fn handle(ctx: &IpcContext, req: IpcRequest) -> IpcResponse {
             Err(e) => err(e),
         },
         IpcRequest::Kill => match st.kill() {
-            Ok(n) => IpcResponse::Ok(format!("killed {n} session(s); locked down until `dishus unlock`")),
-            Err(e) => err(format!("sessions cut, but persisting lockdown failed: {e:#}")),
+            Ok(n) => IpcResponse::Ok(format!(
+                "killed {n} session(s); locked down until `dishus unlock`"
+            )),
+            Err(e) => err(format!(
+                "sessions cut, but persisting lockdown failed: {e:#}"
+            )),
         },
         IpcRequest::Unlock => match st.unlock() {
             Ok(()) => IpcResponse::Ok("unlocked".into()),

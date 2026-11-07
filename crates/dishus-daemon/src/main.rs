@@ -18,7 +18,9 @@ use dishus_daemon::{
 };
 
 fn usage() -> ! {
-    eprintln!("usage: dishus-daemon [--version]\n\nConfiguration: $XDG_CONFIG_HOME/dishus/config.toml\nControl it with the `dishus` CLI.");
+    eprintln!(
+        "usage: dishus-daemon [--version]\n\nConfiguration: $XDG_CONFIG_HOME/dishus/config.toml\nControl it with the `dishus` CLI."
+    );
     std::process::exit(2);
 }
 
@@ -37,11 +39,21 @@ fn make_input() -> (Box<dyn InputSink>, String) {
         }
     }
     #[allow(unreachable_code)]
-    (Box::new(NullInput), "disabled (built without uinput)".into())
+    (
+        Box::new(NullInput),
+        "disabled (built without uinput)".into(),
+    )
 }
 
-fn make_capture(paths: &Paths, cfg: &Config) -> Option<dishus_daemon::capture::client::WorkerProvider> {
-    match dishus_daemon::capture::client::WorkerProvider::new(paths.restore_token_file(), &cfg.video.encoder, cfg.video.show_cursor) {
+fn make_capture(
+    paths: &Paths,
+    cfg: &Config,
+) -> Option<dishus_daemon::capture::client::WorkerProvider> {
+    match dishus_daemon::capture::client::WorkerProvider::new(
+        paths.restore_token_file(),
+        &cfg.video.encoder,
+        cfg.video.show_cursor,
+    ) {
         Ok(w) => Some(w),
         Err(e) => {
             tracing::error!("capture disabled: {e:#}");
@@ -55,7 +67,9 @@ async fn capture_worker(mode: &str) -> Result<()> {
     use dishus_daemon::capture::{WorkerOptions, worker};
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
-        .with_env_filter(EnvFilter::try_from_env("DISHUS_LOG").unwrap_or_else(|_| EnvFilter::new("info")))
+        .with_env_filter(
+            EnvFilter::try_from_env("DISHUS_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
+        )
         .with_target(false)
         .init();
     worker::run(mode, WorkerOptions::from_env()?).await
@@ -64,7 +78,10 @@ async fn capture_worker(mode: &str) -> Result<()> {
 #[cfg(not(feature = "capture"))]
 async fn capture_worker(_mode: &str) -> Result<()> {
     use dishus_daemon::capture::wire::WorkerEvent;
-    let buf = dishus_proto::frame::encode_frame(&WorkerEvent::Failed("built without capture support".into()), 4096)?;
+    let buf = dishus_proto::frame::encode_frame(
+        &WorkerEvent::Failed("built without capture support".into()),
+        4096,
+    )?;
     std::io::Write::write_all(&mut std::io::stdout(), &buf)?;
     Ok(())
 }
@@ -87,7 +104,10 @@ async fn main() -> Result<()> {
         }
     }
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_env("DISHUS_LOG").unwrap_or_else(|_| EnvFilter::new("info,iroh=warn,noq=warn,noq_proto=warn")))
+        .with_env_filter(
+            EnvFilter::try_from_env("DISHUS_LOG")
+                .unwrap_or_else(|_| EnvFilter::new("info,iroh=warn,noq=warn,noq_proto=warn")),
+        )
         .with_target(false)
         .init();
 
@@ -109,8 +129,17 @@ async fn main() -> Result<()> {
 
     let notifier = Notifier::spawn();
     let net = NetOptions::from_config(&cfg)?;
-    let state = Arc::new(AppState::new(paths, cfg, devices, TrackedInput::new(input), capture, notifier));
-    let router = spawn_router(state.clone(), key, &net).await.context("starting iroh endpoint")?;
+    let state = Arc::new(AppState::new(
+        paths,
+        cfg,
+        devices,
+        TrackedInput::new(input),
+        capture,
+        notifier,
+    ));
+    let router = spawn_router(state.clone(), key, &net)
+        .await
+        .context("starting iroh endpoint")?;
     tracing::info!("PC id {}", router.endpoint().id());
 
     let ctx = Arc::new(IpcContext {

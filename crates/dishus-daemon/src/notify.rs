@@ -39,7 +39,16 @@ impl Notifier {
                         "/org/freedesktop/Notifications",
                         Some("org.freedesktop.Notifications"),
                         "Notify",
-                        &("DiShus", 0u32, "preferences-desktop-remote-desktop", &summary, &body, Vec::<&str>::new(), hints, 8000i32),
+                        &(
+                            "DiShus",
+                            0u32,
+                            "preferences-desktop-remote-desktop",
+                            &summary,
+                            &body,
+                            Vec::<&str>::new(),
+                            hints,
+                            8000i32,
+                        ),
                     )
                     .await;
                 if let Err(e) = res {
