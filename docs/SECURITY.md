@@ -105,7 +105,10 @@ What the PC stores:
     button**. Released input is tracked per key, so nothing stays stuck.
   - Pairing exchange timeouts.
 - **One session at a time.** A newer authenticated session replaces the older one.
-- **No `unsafe`** (`unsafe_code = "deny"` workspace-wide). Secrets are zeroized (`zeroize`).
+- **No `unsafe`** (`unsafe_code = "deny"` workspace-wide). There is one exception: the
+  Android-only JNI bootstrap in `crates/dishus-core/src/android.rs`. It hands the JavaVM and the
+  Application context to iroh's DNS and network-interface code, and is unavoidable raw-pointer
+  FFI. Secrets are zeroized (`zeroize`).
   Tokens are redacted in `Debug` output, and no secret is ever logged.
 
 ## Local attack surface

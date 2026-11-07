@@ -110,10 +110,17 @@ pub async fn run(mode: &str, opts: WorkerOptions) -> Result<()> {
         }
         "setup" => {
             let ev = match portal::open(&opts, true).await {
-                Ok(s) => WorkerEvent::Info(format!(
+                Ok(s) if s.token_stored => WorkerEvent::Info(format!(
                     "screen-capture permission stored for {} monitor(s)",
                     s.monitors().len()
                 )),
+                Ok(_) => WorkerEvent::Failed(
+                    "capture was allowed, but NOT remembered: the picker returned no restore \
+                     token, so the phone could not start capture without someone at the PC. Run \
+                     `dishus setup-capture` again and turn on the picker's remember / \
+                     allow-restore-token option."
+                        .into(),
+                ),
                 Err(PortalError::Unavailable(e)) if std::env::var_os("DISPLAY").is_some() => {
                     WorkerEvent::Info(format!("no portal ({e}); X11 capture needs no permission"))
                 }

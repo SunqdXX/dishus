@@ -32,6 +32,9 @@ struct PwStream {
 }
 
 pub struct PortalSession {
+    /// Whether the portal returned a restore token and it was saved (so later sessions can
+    /// start capture without anyone at the PC).
+    pub token_stored: bool,
     session: Option<Session<Screencast>>,
     fd: OwnedFd,
     streams: Vec<PwStream>,
@@ -96,17 +99,22 @@ pub async fn open(opts: &WorkerOptions, interactive: bool) -> Result<PortalSessi
         .start(&session, None, Default::default())
         .await?
         .response()?;
-    match resp.restore_token() {
-        Some(t) => {
-            if let Err(e) = write_private(&opts.token_file, t.as_bytes()) {
+    let token_stored = match resp.restore_token() {
+        Some(t) => match write_private(&opts.token_file, t.as_bytes()) {
+            Ok(()) => true,
+            Err(e) => {
                 tracing::warn!("could not store portal restore token: {e:#}");
+                false
             }
+        },
+        None => {
+            tracing::warn!(
+                "portal returned no restore token; remote sessions will need someone at the PC to \
+                 approve capture (enable the picker's remember / allow-restore-token option)"
+            );
+            false
         }
-        None => tracing::warn!(
-            "portal returned no restore token; remote sessions will need someone at the PC to approve capture \
-             (on Hyprland set `screencopy {{ allow_token_by_default = true }}` in ~/.config/hypr/xdph.conf)"
-        ),
-    }
+    };
     let mut streams = Vec::new();
     for (i, s) in resp
         .streams()
@@ -142,6 +150,7 @@ pub async fn open(opts: &WorkerOptions, interactive: bool) -> Result<PortalSessi
         .context("opening PipeWire remote")
         .map_err(PortalError::Other)?;
     Ok(PortalSession {
+        token_stored,
         session: Some(session),
         fd,
         streams,

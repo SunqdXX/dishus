@@ -793,6 +793,7 @@ dependencies = [
  "dishus-proto",
  "getrandom 0.4.3",
  "iroh",
+ "jni 0.21.1",
  "postcard",
  "serde",
  "thiserror 2.0.21",

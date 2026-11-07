@@ -37,6 +37,7 @@ class DishusApp : Application() {
     override fun onCreate() {
         super.onCreate()
         System.setProperty("jna.nosys", "true")
+        NativeInit.init(applicationContext) // must precede any networking in the core
         core = Core()
         vault = VaultStore(this)
         prefs = Prefs(this)

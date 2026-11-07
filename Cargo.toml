@@ -33,6 +33,13 @@ strip = true
 panic = "abort"
 opt-level = 3
 
+# Android library build: like release, but panics unwind so UniFFI can turn a Rust panic into a
+# Kotlin exception instead of killing the app (`panic = "abort"` would). Symbols are kept out of
+# the APK by the strip setting inherited from release.
+[profile.release-android]
+inherits = "release"
+panic = "unwind"
+
 [workspace.lints.rust]
 unsafe_code = "deny"
 

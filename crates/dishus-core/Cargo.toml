@@ -32,6 +32,10 @@ chacha20poly1305 = { version = "0.11", default-features = false, features = ["al
 getrandom = "0.4"
 uniffi = { version = "0.32", optional = true, default-features = false }
 
+[target.'cfg(target_os = "android")'.dependencies]
+# JNI bootstrap for iroh's Android DNS/interface lookups (see src/android.rs).
+jni = "0.21"
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true }

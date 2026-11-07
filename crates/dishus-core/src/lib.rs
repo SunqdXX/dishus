@@ -7,6 +7,9 @@ pub mod vault;
 #[cfg(feature = "ffi")]
 pub mod ffi;
 
+#[cfg(target_os = "android")]
+mod android;
+
 #[cfg(feature = "ffi")]
 uniffi::setup_scaffolding!();
 
