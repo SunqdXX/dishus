@@ -1,0 +1,20 @@
+[package]
+name = "dishus-proto"
+description = "Wire protocol for DiShus (remote control over iroh)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+postcard.workspace = true
+thiserror.workspace = true
+data-encoding.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["io-util", "rt", "macros"] }
+
+[lints]
+workspace = true

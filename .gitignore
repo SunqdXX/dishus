@@ -1,0 +1,9 @@
+/target
+**/*.rs.bk
+android/.gradle
+android/**/build
+android/local.properties
+android/app/src/main/jniLibs
+android/app/src/main/java/uniffi
+*.iml
+.idea
