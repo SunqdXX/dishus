@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # DiShus test rig: isolated daemon instances that never touch the user's desktop input.
 #   rig.sh start <name> <wayland|x11|testsrc>   start an instance (input is RECORDED, not injected)
-#   rig.sh stop <name>                          stop it (and its Xvfb)
+#   rig.sh stop <name>                          stop it (and its Xvfb); state is kept
+#   rig.sh clean <name>                         stop and delete its state (refuses if mounts inside)
 #   rig.sh cli <name> <dishus args...>          run the CLI against it
 #   rig.sh link <name>                          open pairing, print the dishus:// link
 #   rig.sh env <name>                           print the env used
@@ -40,7 +41,8 @@ case "$cmd" in
         # private session bus: no portal reachable -> X11 fallback; no Wayland
         nohup env -u WAYLAND_DISPLAY -u HYPRLAND_INSTANCE_SIGNATURE -u XDG_CURRENT_DESKTOP \
           DISPLAY="$disp" XDG_SESSION_TYPE=x11 "${common[@]}" \
-          dbus-run-session -- "$BIN/dishus-daemon" >"$b/daemon.log" 2>&1 &
+          dbus-run-session --config-file="$(dirname "$0")/session-noactivation.conf" -- \
+          "$BIN/dishus-daemon" >"$b/daemon.log" 2>&1 &
         echo $! > "$b/daemon.pid" ;;
       *) echo "mode?"; exit 2 ;;
     esac
@@ -52,6 +54,17 @@ case "$cmd" in
       [ -f "$b/$f.pid" ] && { kill "$(cat "$b/$f.pid")" 2>/dev/null || true; rm -f "$b/$f.pid"; }
     done
     sleep 0.5; echo "stopped $name" ;;
+  clean)
+    "$0" stop "$name" >/dev/null
+    # Never delete through a mount (a FUSE portal view maps to the user's real files).
+    if [ -d "$b" ]; then
+      if findmnt -rn -o TARGET | grep -q "^$b"; then
+        echo "REFUSING to remove $b: something is mounted inside it:"; findmnt -rn -o TARGET | grep "^$b"
+        exit 1
+      fi
+      rm -rf --one-file-system "$b"
+    fi
+    echo "cleaned $name" ;;
   cli)
     shift 2; env $(envof "$name") "$BIN/dishus" "$@" ;;
   link)

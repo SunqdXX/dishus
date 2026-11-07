@@ -14,7 +14,7 @@ mark() { wc -l < "$LOG"; }
 since(){ tail -n +"$(( $1 + 1 ))" "$LOG"; }
 pair() { local l; l=$($RIG link "$NAME"); $SOAK pair "$l" | grep -q "RESULT paired"; }
 
-$RIG stop "$NAME" >/dev/null 2>&1; rm -rf "$B" "$DISHUS_CLIENT_DIR"
+$RIG clean "$NAME" || exit 1; rm -rf --one-file-system "$DISHUS_CLIENT_DIR"
 $RIG start "$NAME" "$MODE" || exit 1
 pair || { echo "initial pairing failed"; exit 1; }
 
