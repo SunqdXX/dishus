@@ -10,6 +10,7 @@
 //! * Pairing (separate ALPN): a single [`PairRequest`] / [`PairResponse`] exchange.
 
 pub mod frame;
+pub mod ipc;
 pub mod keys;
 pub mod msg;
 pub mod pairing;

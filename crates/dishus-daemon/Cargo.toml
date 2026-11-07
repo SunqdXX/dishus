@@ -1,5 +1,54 @@
 [package]
-name="dishus-daemon"
-version.workspace=true
-edition.workspace=true
-license.workspace=true
+name = "dishus-daemon"
+description = "DiShus PC daemon: screen capture, H.264 encode, uinput, iroh transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "dishus-daemon"
+path = "src/main.rs"
+
+[features]
+default = ["capture", "uinput"]
+# Screen capture + encode via xdg-desktop-portal / PipeWire / GStreamer.
+capture = ["dep:ashpd", "dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
+# Virtual keyboard/mouse through /dev/uinput.
+uinput = ["dep:evdev"]
+
+[dependencies]
+dishus-proto.workspace = true
+iroh.workspace = true
+tokio.workspace = true
+serde.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+subtle.workspace = true
+zeroize.workspace = true
+data-encoding.workspace = true
+bytes.workspace = true
+getrandom = "0.4"
+rustix = { version = "1", features = ["process", "system"] }
+zbus = { version = "6", default-features = false, features = ["tokio"] }
+n0-future = "0.3"
+
+ashpd = { version = "0.14", default-features = false, features = ["tokio", "screencast"], optional = true }
+gstreamer = { version = "0.25", optional = true }
+gstreamer-app = { version = "0.25", optional = true }
+gstreamer-video = { version = "0.25", optional = true }
+evdev = { version = "0.13", optional = true }
+
+[dev-dependencies]
+dishus-core = { path = "../dishus-core" }
+tempfile = "3"
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

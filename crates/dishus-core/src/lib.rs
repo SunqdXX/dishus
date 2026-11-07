@@ -1,0 +1,15 @@
+//! DiShus client core, shared by the Android app (through UniFFI, feature `ffi`) and the
+//! desktop test client.
+
+pub mod client;
+pub mod vault;
+
+#[cfg(feature = "ffi")]
+pub mod ffi;
+
+#[cfg(feature = "ffi")]
+uniffi::setup_scaffolding!();
+
+pub use client::{Client, NetConfig, Session, VideoPacket};
+pub use dishus_proto as proto;
+pub use vault::{PairedPc, VaultData};

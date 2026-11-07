@@ -1,5 +1,41 @@
 [package]
-name="dishus-core"
-version.workspace=true
-edition.workspace=true
-license.workspace=true
+name = "dishus-core"
+description = "DiShus client core (phone side): iroh transport, pairing, session, encrypted key store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["lib", "cdylib"]
+
+[features]
+default = []
+# UniFFI bindings for Android (Kotlin).
+ffi = ["dep:uniffi"]
+
+[dependencies]
+dishus-proto.workspace = true
+iroh.workspace = true
+tokio.workspace = true
+serde.workspace = true
+postcard.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+zeroize.workspace = true
+bytes.workspace = true
+argon2 = { version = "0.6", default-features = false, features = ["alloc", "zeroize"] }
+chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc"] }
+getrandom = "0.4"
+uniffi = { version = "0.32", optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tracing-subscriber.workspace = true
+
+[[example]]
+name = "desktop_client"
+
+[lints]
+workspace = true
