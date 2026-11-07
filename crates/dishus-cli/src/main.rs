@@ -69,6 +69,37 @@ fn devices_file() -> Result<PathBuf> {
     Ok(base.join("dishus/devices.toml"))
 }
 
+/// Same path the daemon uses (`$XDG_STATE_HOME/dishus/lockdown`); the daemon only checks that
+/// it exists, so the CLI can enforce lockdown even when the daemon is hung or stopped.
+fn lockdown_file() -> Result<PathBuf> {
+    let base = match std::env::var_os("XDG_STATE_HOME").filter(|v| !v.is_empty()) {
+        Some(v) => PathBuf::from(v),
+        None => {
+            PathBuf::from(std::env::var_os("HOME").context("HOME not set")?).join(".local/state")
+        }
+    };
+    Ok(base.join("dishus/lockdown"))
+}
+
+fn write_lockdown_offline() -> Result<PathBuf> {
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    let f = lockdown_file()?;
+    if let Some(dir) = f.parent() {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&f)?;
+    std::io::Write::write_all(&mut file, b"locked by `dishus kill` (offline)\n")?;
+    Ok(f)
+}
+
 async fn call(req: IpcRequest, wait: Duration) -> Result<IpcResponse> {
     let path = runtime_socket()?;
     let mut s = UnixStream::connect(&path).await.with_context(|| {
@@ -313,20 +344,37 @@ async fn main() -> Result<()> {
             IpcResponse::Ok(m) => println!("{m}"),
             r => bail!("unexpected reply {r:?}"),
         },
-        Cmd::Kill => match call(IpcRequest::Kill, short).await {
+        // Panic button: don't wait long on a hung daemon before falling back.
+        Cmd::Kill => match call(IpcRequest::Kill, Duration::from_secs(3)).await {
             Ok(IpcResponse::Ok(m)) => println!("{m}"),
             Ok(r) => bail!("unexpected reply {r:?}"),
             Err(e) => {
                 eprintln!("kill via daemon failed: {e:#}\nStopping the service instead.");
+                // Persist lockdown first so a restart (or reboot) of the daemon stays locked.
+                let lock = write_lockdown_offline();
                 let st = std::process::Command::new("systemctl")
                     .args(["--user", "stop", "dishus.service"])
                     .status();
+                match &lock {
+                    Ok(p) => eprintln!("lockdown flag written: {}", p.display()),
+                    Err(e) => eprintln!("could not write lockdown flag: {e:#}"),
+                }
                 bail!("daemon unreachable; `systemctl --user stop dishus` -> {st:?}");
             }
         },
-        Cmd::Unlock => match call(IpcRequest::Unlock, short).await? {
-            IpcResponse::Ok(m) => println!("{m}"),
-            r => bail!("unexpected reply {r:?}"),
+        Cmd::Unlock => match call(IpcRequest::Unlock, short).await {
+            Ok(IpcResponse::Ok(m)) => println!("{m}"),
+            Ok(r) => bail!("unexpected reply {r:?}"),
+            Err(e) if format!("{e}").contains("daemon not running") => {
+                match std::fs::remove_file(lockdown_file()?) {
+                    Ok(()) => println!("lockdown lifted (daemon was not running)"),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        println!("not in lockdown")
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            Err(e) => return Err(e),
         },
         Cmd::SetupCapture => {
             println!(
