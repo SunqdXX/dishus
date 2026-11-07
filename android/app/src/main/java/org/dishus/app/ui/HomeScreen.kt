@@ -164,6 +164,7 @@ fun AppSettingsDialog(app: DishusApp, onClose: () -> Unit) {
     var lockMin by remember { mutableIntStateOf(app.prefs.autoLockMinutes) }
     var autoConnect by remember { mutableStateOf(app.prefs.autoConnect) }
     var haptics by remember { mutableStateOf(app.prefs.haptics) }
+    var shots by remember { mutableStateOf(app.prefs.allowScreenshots) }
     var speed by remember { mutableFloatStateOf(app.prefs.pointerSpeed) }
     var error by remember { mutableStateOf<String?>(null) }
     val phoneId = remember { runCatching { app.core.phoneId() }.getOrDefault("?") }
@@ -181,6 +182,7 @@ fun AppSettingsDialog(app: DishusApp, onClose: () -> Unit) {
                 Slider(lockMin.toFloat(), { lockMin = it.toInt() }, valueRange = 0f..30f, steps = 29)
                 LabeledSwitch("Connect to last PC on unlock", autoConnect) { autoConnect = it }
                 LabeledSwitch("Keyboard haptics", haptics) { haptics = it }
+                LabeledSwitch("Allow screenshots (the PC screen also shows in recents)", shots) { shots = it }
                 Text("Pointer speed ${"%.1f".format(speed)}×")
                 Slider(speed, { speed = it }, valueRange = 0.3f..5f)
                 HorizontalDivider(Modifier.padding(vertical = 8.dp))
@@ -199,6 +201,8 @@ fun AppSettingsDialog(app: DishusApp, onClose: () -> Unit) {
                     app.prefs.autoLockMinutes = lockMin
                     app.prefs.autoConnect = autoConnect
                     app.prefs.haptics = haptics
+                    app.prefs.allowScreenshots = shots
+                    app.screenshotsAllowed.value = shots
                     app.prefs.pointerSpeed = speed
                     onClose()
                 } catch (e: Exception) {

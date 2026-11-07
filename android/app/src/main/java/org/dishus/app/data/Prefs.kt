@@ -21,6 +21,15 @@ class Prefs(context: Context) {
         get() = sp.getInt("auto_lock_min", 5)
         set(v) = sp.edit().putInt("auto_lock_min", v.coerceIn(0, 60)).apply()
 
+    /**
+     * Off by default (FLAG_SECURE: no screenshots, screen recording or recents thumbnail of the
+     * PC screen). The user may allow it, e.g. to screenshot the PC for someone. The lock screen
+     * stays protected regardless.
+     */
+    var allowScreenshots: Boolean
+        get() = sp.getBoolean("allow_screenshots", false)
+        set(v) = sp.edit().putBoolean("allow_screenshots", v).apply()
+
     var haptics: Boolean
         get() = sp.getBoolean("haptics", true)
         set(v) = sp.edit().putBoolean("haptics", v).apply()

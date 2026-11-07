@@ -147,7 +147,9 @@ What the PC stores:
     the unlocked keys from the Rust core.
   - The session is closed as soon as the app goes to the background.
 - **Screen and storage protection.**
-  - `FLAG_SECURE`: no screenshots, screen recording or recents thumbnail.
+  - `FLAG_SECURE`: no screenshots, screen recording or recents thumbnail. This is on by default.
+    *Settings → Allow screenshots* turns it off for the unlocked screens, e.g. to screenshot the
+    PC for someone. The lock screen is always protected.
   - `allowBackup=false` plus data-extraction rules excluding everything.
   - Storage in `noBackupFilesDir`, no cleartext traffic.
 - **Permissions:** INTERNET, CAMERA (QR scan, prompted when used), USE_BIOMETRIC, VIBRATE. Nothing

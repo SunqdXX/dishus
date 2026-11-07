@@ -6,6 +6,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -22,7 +23,8 @@ import org.dishus.app.ui.RemoteScreen
 class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // The remote screen shows the PC desktop: never in screenshots, recents thumbnails or casts.
+        // Secure from the first frame; Root relaxes it only when unlocked AND the user allowed
+        // screenshots in Settings.
         window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
         enableEdgeToEdge()
         val app = application as DishusApp
@@ -35,6 +37,13 @@ class MainActivity : FragmentActivity() {
 @Composable
 private fun Root(app: DishusApp, activity: FragmentActivity) {
     val locked by app.locked.collectAsState()
+    val shotsAllowed by app.screenshotsAllowed.collectAsState()
+    // The lock screen (password entry) is always protected; elsewhere it's the user's choice.
+    val secure = locked || !shotsAllowed
+    SideEffect {
+        if (secure) activity.window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        else activity.window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+    }
     var remotePc by rememberSaveable { mutableStateOf<String?>(null) }
     var autoConnectDone by remember { mutableStateOf(false) }
 

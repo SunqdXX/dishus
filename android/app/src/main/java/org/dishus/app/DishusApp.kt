@@ -25,6 +25,9 @@ class DishusApp : Application() {
     /** True whenever the Rust core holds no secrets. UI navigates to the lock screen. */
     val locked: StateFlow<Boolean> = _locked
 
+    /** Mirrors [Prefs.allowScreenshots] so the activity can toggle FLAG_SECURE live. */
+    val screenshotsAllowed = MutableStateFlow(false)
+
     /** Set while the app is in the background; consumers close live sessions. */
     val backgrounded = MutableStateFlow(false)
 
@@ -37,6 +40,7 @@ class DishusApp : Application() {
         core = Core()
         vault = VaultStore(this)
         prefs = Prefs(this)
+        screenshotsAllowed.value = prefs.allowScreenshots
         runCatching { core.setRelays(RelaySettings(prefs.relays, prefs.disableRelays)) }
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStop(owner: LifecycleOwner) {

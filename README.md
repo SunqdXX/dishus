@@ -216,8 +216,9 @@ Logging: `DISHUS_LOG=debug` (a `tracing` filter). Secrets and tokens are never l
 - **Keyboard.** Modifier keys: tap = applies to the next key; long-press = locked until tapped
   again. Holding a normal key auto-repeats on the PC.
 - **Privacy.** The app locks after the configured time in the background, and drops the session
-  whenever it leaves the foreground. Screenshots and the recents thumbnail are blocked
-  (`FLAG_SECURE`). Backups are disabled.
+  whenever it leaves the foreground. Screenshots and the recents thumbnail are blocked by default
+  (`FLAG_SECURE`; *Settings → Allow screenshots* lifts it everywhere except the lock screen).
+  Backups are disabled.
 
 ### Building the app
 
