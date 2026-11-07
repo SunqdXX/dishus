@@ -9,22 +9,23 @@ url="https://github.com/dishus/dishus"
 license=('MIT OR Apache-2.0')
 depends=(
   'gcc-libs' 'glibc'
-  'gstreamer' 'gst-plugins-base-libs' 'gst-plugins-base'
+  'gstreamer'                # coreelements
+  'gst-plugins-base-libs'    # appsink, videoconvertscale, videorate, videotestsrc
   'gst-plugin-pipewire'      # pipewiresrc
-  'gst-plugins-bad-libs'     # nvcodec (NVENC), h264parse
-  'gst-plugins-bad'          # va (VA-API) and remaining -bad plugins
+  'gst-plugins-bad-libs'     # nvcodec (NVENC, cudascale), h264parse
   'pipewire' 'xdg-desktop-portal'
 )
 optdepends=(
-  'gst-plugins-ugly: x264 software encoder fallback'
-  'gst-plugin-openh264: openh264 software encoder fallback'
   'nvidia-utils: NVENC hardware encoding'
-  'libva-mesa-driver: VA-API hardware encoding on AMD'
-  'intel-media-driver: VA-API hardware encoding on Intel'
+  'gst-plugin-va: VA-API hardware encoding (Intel/AMD)'
+  'libva-mesa-driver: VA-API driver for AMD'
+  'intel-media-driver: VA-API driver for Intel'
+  'gst-plugins-ugly: x264 software encoder fallback'
+  'gst-plugins-bad: openh264 software encoder fallback'
+  'gst-plugins-good: X11 capture fallback (ximagesrc)'
   'xdg-desktop-portal-hyprland: screen capture on Hyprland'
   'xdg-desktop-portal-gnome: screen capture on GNOME and niri'
   'xdg-desktop-portal-kde: screen capture on KDE Plasma'
-  'gst-plugins-good: X11 capture fallback (ximagesrc)'
 )
 makedepends=('cargo' 'git')
 provides=('dishus')
