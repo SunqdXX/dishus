@@ -7,6 +7,8 @@ root="$here/.."
 cd "$root"
 cargo ndk -t arm64-v8a -t x86_64 --platform 28 -o "$here/app/src/main/jniLibs" \
     build --release -p dishus-core --features ffi --lib
+# cargo-ndk copies every .so it finds; some dependencies also emit cdylibs we don't load.
+find "$here/app/src/main/jniLibs" -name '*.so' ! -name 'libdishus_core.so' -delete
 # Bindings are generated from a host *debug* build of the same crate (library mode): the
 # release profile strips symbols, which removes the UniFFI metadata bindgen reads.
 cargo build -p dishus-core --features ffi --lib

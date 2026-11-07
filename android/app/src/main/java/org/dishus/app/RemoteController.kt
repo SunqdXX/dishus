@@ -144,7 +144,7 @@ class RemoteController(private val app: DishusApp, private val pcId: String) {
                 // Runs on cancellation too (stop/background): never leave keys held on the PC.
                 withContext(NonCancellable) {
                     runCatching { s.releaseAll() }
-                    runCatching { withTimeoutOrNull(1500) { s.close() } }
+                    runCatching { withTimeoutOrNull(1500) { s.disconnect() } }
                     s.destroy()
                 }
                 mods.clear(); publishMods()

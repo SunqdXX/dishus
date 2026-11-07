@@ -532,7 +532,8 @@ impl RemoteSession {
         self.session.is_closed()
     }
 
-    pub async fn close(&self) {
+    /// Named `disconnect` because UniFFI objects already get `close()` (AutoCloseable = destroy).
+    pub async fn disconnect(&self) {
         let s = self.session.clone();
         let _ = self.handle.spawn(async move { s.close().await }).await;
     }
