@@ -65,6 +65,7 @@ package() {
   install -Dm644 packaging/udev/70-dishus-uinput.rules "$pkgdir/usr/share/dishus/70-dishus-uinput.rules"
   install -Dm644 README.md "$pkgdir/usr/share/doc/dishus/README.md"
   install -Dm644 docs/SECURITY.md "$pkgdir/usr/share/doc/dishus/SECURITY.md"
+  install -Dm644 docs/TESTING.md "$pkgdir/usr/share/doc/dishus/TESTING.md"
   install -Dm644 LICENSE-MIT "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
   install -Dm644 LICENSE-APACHE "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
 }

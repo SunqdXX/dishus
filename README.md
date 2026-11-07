@@ -56,10 +56,14 @@ Design decisions and their reasons are in [docs/PLAN.md](docs/PLAN.md). The thre
 
 ## Install (PC)
 
-Arch / AUR-style build from this repository:
+Arch: `packaging/aur/PKGBUILD` (`dishus-git`). Its `url`/`source` point at the upstream repo
+(`github.com/dishus/dishus`, a placeholder until the project is published). To build from a local
+checkout instead:
 
 ```sh
-cd packaging/aur && makepkg -si     # builds dishus-git from the git repo
+mkdir -p /tmp/dishus-pkg && cp packaging/aur/PKGBUILD /tmp/dishus-pkg/ && cd /tmp/dishus-pkg
+sed -i "s|^source=.*|source=(\"dishus::git+file://$OLDPWD\")|" PKGBUILD
+makepkg -si
 ```
 
 Or build by hand (Rust ≥ 1.89, GStreamer 1.24+ dev files):
@@ -72,11 +76,17 @@ install -Dm644 packaging/systemd/dishus.service ~/.config/systemd/user/dishus.se
 # edit ExecStart= to ~/.local/bin/dishus-daemon if you installed there
 ```
 
-Runtime packages:
-- **Required:** `gstreamer`, `gst-plugins-base`, `gst-plugins-bad` (nvcodec / va),
-  `gst-plugin-pipewire`, `pipewire`, `xdg-desktop-portal` plus the portal backend for your
-  desktop (`xdg-desktop-portal-hyprland`, `-gnome`, `-kde`, `-wlr`, …).
-- **Optional:** `gst-plugins-ugly` + `x264` (software fallback), `gst-plugin-openh264`.
+Runtime packages (Arch names):
+- **Required:**
+  - `gstreamer`, `gst-plugins-base-libs`
+  - `gst-plugins-bad-libs`: NVENC (`nvcodec`) and `h264parse`
+  - `gst-plugin-pipewire`, `pipewire`, `xdg-desktop-portal`
+  - the portal backend for your desktop (`xdg-desktop-portal-hyprland`, `-gnome`, `-kde`, …)
+- **Optional:**
+  - `gst-plugin-va`: VA-API on Intel/AMD
+  - `gst-plugins-ugly`: x264 software encoder
+  - `gst-plugins-bad`: openh264
+  - `gst-plugins-good`: X11 capture
 
 ### 1. Let the daemon create input devices
 
@@ -264,7 +274,7 @@ pair, stream video to stdout (`… view | ffplay -f h264 -`), send keys and rene
 | ⚠️ | **Real screen capture through the portal** (the dialog, restore token and PipeWire path) was not exercised. Testing it pops a dialog on the desktop. Only the GStreamer test source went through the full encode/transport path. |
 | ⚠️ | Actual key and pointer *effects* on the desktop: devices are created, but no input was injected into the live session during development. |
 | ⚠️ | VA-API, x264 and openh264 encoder paths (plugins not installed here), X11 fallback, GNOME/KDE/niri portals. |
-| ⚠️ | `makepkg` of the PKGBUILD, and the CI workflow itself. |
+| ⚠️ | The CI workflow itself has never run (no remote yet). `makepkg` of the PKGBUILD **was** verified from a local checkout: it builds, runs the tests, and packages. |
 
 **Known gaps and limits:**
 
