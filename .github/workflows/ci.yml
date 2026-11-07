@@ -66,9 +66,13 @@ jobs:
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/27.2.12479018
         run: ./android/build-rust.sh
+      # No gradlew wrapper jar is committed (no binaries in the repo); use a pinned Gradle.
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
       - name: Assemble debug APK
         working-directory: android
-        run: ./gradlew --no-daemon assembleDebug lint
+        run: gradle --no-daemon assembleDebug lint
       - uses: actions/upload-artifact@v4
         with:
           name: dishus-debug-apk

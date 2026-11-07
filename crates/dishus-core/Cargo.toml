@@ -13,6 +13,8 @@ crate-type = ["lib", "cdylib"]
 default = []
 # UniFFI bindings for Android (Kotlin).
 ffi = ["dep:uniffi"]
+# Host-only: the binding generator binary.
+bindgen-cli = ["ffi", "uniffi/cli"]
 
 [dependencies]
 dishus-proto.workspace = true
@@ -28,7 +30,7 @@ bytes.workspace = true
 argon2 = { version = "0.6", default-features = false, features = ["alloc", "zeroize"] }
 chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc"] }
 getrandom = "0.4"
-uniffi = { version = "0.32", optional = true }
+uniffi = { version = "0.32", optional = true, default-features = false }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
@@ -36,6 +38,10 @@ tracing-subscriber = { workspace = true }
 
 [[example]]
 name = "desktop_client"
+
+[[bin]]
+name = "uniffi-bindgen"
+required-features = ["bindgen-cli"]
 
 [lints]
 workspace = true
