@@ -29,7 +29,11 @@ pub struct KdfParams {
 
 impl Default for KdfParams {
     fn default() -> Self {
-        Self { m_kib: 64 * 1024, t: 3, p: 1 }
+        Self {
+            m_kib: 64 * 1024,
+            t: 3,
+            p: 1,
+        }
     }
 }
 
@@ -37,7 +41,13 @@ impl KdfParams {
     fn check(&self) -> Result<(), VaultError> {
         // Refuse parameters below a floor (a tampered header can't downgrade us; it's AAD, but
         // also refuse absurd values that would OOM the phone).
-        if self.m_kib < 19 * 1024 || self.m_kib > 1024 * 1024 || self.t < 2 || self.t > 20 || self.p == 0 || self.p > 8 {
+        if self.m_kib < 19 * 1024
+            || self.m_kib > 1024 * 1024
+            || self.t < 2
+            || self.t > 20
+            || self.p == 0
+            || self.p > 8
+        {
             return Err(VaultError::Format);
         }
         Ok(())
@@ -66,7 +76,9 @@ pub struct VaultData {
 
 impl std::fmt::Debug for VaultData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("VaultData").field("pcs", &self.pcs).finish_non_exhaustive()
+        f.debug_struct("VaultData")
+            .field("pcs", &self.pcs)
+            .finish_non_exhaustive()
     }
 }
 
@@ -88,7 +100,8 @@ pub struct PairedPc {
 
 fn derive(password: &[u8], salt: &[u8], p: KdfParams) -> Result<Zeroizing<[u8; 32]>, VaultError> {
     p.check()?;
-    let params = Params::new(p.m_kib, p.t, p.p, Some(32)).map_err(|e| VaultError::Internal(e.to_string()))?;
+    let params = Params::new(p.m_kib, p.t, p.p, Some(32))
+        .map_err(|e| VaultError::Internal(e.to_string()))?;
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
     let mut key = Zeroizing::new([0u8; 32]);
     argon
@@ -115,11 +128,19 @@ pub fn seal(password: &str, data: &VaultData, kdf: KdfParams) -> Result<Vec<u8>,
     header.extend_from_slice(&salt);
     header.extend_from_slice(&nonce);
 
-    let plain = Zeroizing::new(postcard::to_stdvec(data).map_err(|e| VaultError::Internal(e.to_string()))?);
-    let cipher = XChaCha20Poly1305::new_from_slice(key.as_ref()).map_err(|_| VaultError::Internal("key".into()))?;
+    let plain =
+        Zeroizing::new(postcard::to_stdvec(data).map_err(|e| VaultError::Internal(e.to_string()))?);
+    let cipher = XChaCha20Poly1305::new_from_slice(key.as_ref())
+        .map_err(|_| VaultError::Internal("key".into()))?;
     let n = XNonce::try_from(&nonce[..]).map_err(|_| VaultError::Internal("nonce".into()))?;
     let ct = cipher
-        .encrypt(&n, Payload { msg: &plain, aad: &header })
+        .encrypt(
+            &n,
+            Payload {
+                msg: &plain,
+                aad: &header,
+            },
+        )
         .map_err(|_| VaultError::Internal("encrypt".into()))?;
     header.extend_from_slice(&ct);
     Ok(header)
@@ -130,7 +151,11 @@ pub fn open(password: &str, blob: &[u8]) -> Result<VaultData, VaultError> {
         return Err(VaultError::Format);
     }
     let be = |i: usize| u32::from_be_bytes(blob[i..i + 4].try_into().expect("4 bytes"));
-    let kdf = KdfParams { m_kib: be(4), t: be(8), p: be(12) };
+    let kdf = KdfParams {
+        m_kib: be(4),
+        t: be(8),
+        p: be(12),
+    };
     let salt = &blob[16..16 + SALT_LEN];
     let nonce = &blob[16 + SALT_LEN..HEADER_LEN];
     let key = derive(password.as_bytes(), salt, kdf)?;
@@ -138,7 +163,13 @@ pub fn open(password: &str, blob: &[u8]) -> Result<VaultData, VaultError> {
     let n = XNonce::try_from(nonce).map_err(|_| VaultError::Format)?;
     let plain = Zeroizing::new(
         cipher
-            .decrypt(&n, Payload { msg: &blob[HEADER_LEN..], aad: &blob[..HEADER_LEN] })
+            .decrypt(
+                &n,
+                Payload {
+                    msg: &blob[HEADER_LEN..],
+                    aad: &blob[..HEADER_LEN],
+                },
+            )
             .map_err(|_| VaultError::Decrypt)?,
     );
     postcard::from_bytes(&plain).map_err(|_| VaultError::Format)
@@ -156,11 +187,21 @@ mod tests {
     use super::*;
 
     // Minimum allowed params keep tests fast.
-    const FAST: KdfParams = KdfParams { m_kib: 19 * 1024, t: 2, p: 1 };
+    const FAST: KdfParams = KdfParams {
+        m_kib: 19 * 1024,
+        t: 2,
+        p: 1,
+    };
 
     fn sample() -> VaultData {
         let mut d = new_identity().unwrap();
-        d.pcs.push(PairedPc { endpoint_id: [1; 32], name: "desk".into(), relays: vec![], addrs: vec![], expires_at: 9 });
+        d.pcs.push(PairedPc {
+            endpoint_id: [1; 32],
+            name: "desk".into(),
+            relays: vec![],
+            addrs: vec![],
+            expires_at: 9,
+        });
         d
     }
 
@@ -197,6 +238,9 @@ mod tests {
 
     #[test]
     fn weak_password() {
-        assert_eq!(seal("short", &sample(), FAST), Err(VaultError::WeakPassword));
+        assert_eq!(
+            seal("short", &sample(), FAST),
+            Err(VaultError::WeakPassword)
+        );
     }
 }

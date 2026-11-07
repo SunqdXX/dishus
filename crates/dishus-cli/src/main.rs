@@ -101,7 +101,8 @@ fn human_until(t: u64) -> String {
     }
     let d = t - n;
     if d >= 86_400 {
-        format!("{}d", d / 86_400)
+        // round to the nearest day so a fresh 30-day pairing shows "30d", not "29d"
+        format!("{}d", (d + 43_200) / 86_400)
     } else if d >= 3600 {
         format!("{}h", d / 3600)
     } else {

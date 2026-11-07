@@ -37,13 +37,17 @@ impl From<vault::VaultError> for DishusError {
         match e {
             vault::VaultError::Decrypt => DishusError::WrongPassword,
             vault::VaultError::WeakPassword => DishusError::InvalidInput { msg: e.to_string() },
-            other => DishusError::Internal { msg: other.to_string() },
+            other => DishusError::Internal {
+                msg: other.to_string(),
+            },
         }
     }
 }
 
 fn net_err(e: anyhow::Error) -> DishusError {
-    DishusError::Network { msg: format!("{e:#}") }
+    DishusError::Network {
+        msg: format!("{e:#}"),
+    }
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -57,7 +61,11 @@ pub struct PcInfo {
 
 impl From<&PairedPc> for PcInfo {
     fn from(p: &PairedPc) -> Self {
-        PcInfo { id: data_encoding_hex(&p.endpoint_id), name: p.name.clone(), expires_at: p.expires_at }
+        PcInfo {
+            id: data_encoding_hex(&p.endpoint_id),
+            name: p.name.clone(),
+            expires_at: p.expires_at,
+        }
     }
 }
 
@@ -109,11 +117,28 @@ impl From<&StreamSettings> for StreamParams {
 
 #[derive(Debug, Clone, uniffi::Enum)]
 pub enum ControlEvent {
-    Welcome { pc_name: String, monitors: Vec<Monitor>, expires_at: u64 },
-    StreamInfo { monitor: u8, width: u32, height: u32, fps: u8, bitrate_kbps: u32, encoder: String },
-    Renewed { expires_at: u64 },
-    Notice { message: String },
-    Closed { reason: String },
+    Welcome {
+        pc_name: String,
+        monitors: Vec<Monitor>,
+        expires_at: u64,
+    },
+    StreamInfo {
+        monitor: u8,
+        width: u32,
+        height: u32,
+        fps: u8,
+        bitrate_kbps: u32,
+        encoder: String,
+    },
+    Renewed {
+        expires_at: u64,
+    },
+    Notice {
+        message: String,
+    },
+    Closed {
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -146,8 +171,13 @@ pub struct Core {
 }
 
 impl Core {
-    fn with_vault<T>(&self, f: impl FnOnce(&mut Unlocked) -> Result<T, DishusError>) -> Result<T, DishusError> {
-        let mut g = self.unlocked.lock().map_err(|_| DishusError::Internal { msg: "poisoned".into() })?;
+    fn with_vault<T>(
+        &self,
+        f: impl FnOnce(&mut Unlocked) -> Result<T, DishusError>,
+    ) -> Result<T, DishusError> {
+        let mut g = self.unlocked.lock().map_err(|_| DishusError::Internal {
+            msg: "poisoned".into(),
+        })?;
         let u = g.as_mut().ok_or(DishusError::Locked)?;
         f(u)
     }
@@ -186,21 +216,32 @@ impl Core {
             .enable_all()
             .build()
             .map_err(|e| DishusError::Internal { msg: e.to_string() })?;
-        Ok(Arc::new(Self { rt, unlocked: Mutex::new(None), net: Mutex::new(NetConfig::default()), client: Mutex::new(None) }))
+        Ok(Arc::new(Self {
+            rt,
+            unlocked: Mutex::new(None),
+            net: Mutex::new(NetConfig::default()),
+            client: Mutex::new(None),
+        }))
     }
 
     /// Create a new identity protected by `password`. Returns the sealed blob to persist.
     pub fn create_vault(&self, password: String) -> Result<Vec<u8>, DishusError> {
         let data = vault::new_identity()?;
         let blob = vault::seal(&password, &data, KdfParams::default())?;
-        *self.unlocked.lock().expect("vault lock") = Some(Unlocked { data, password: password.into() });
+        *self.unlocked.lock().expect("vault lock") = Some(Unlocked {
+            data,
+            password: password.into(),
+        });
         Ok(blob)
     }
 
     /// Decrypt a previously sealed blob. Slow on purpose (Argon2id).
     pub fn unlock(&self, password: String, blob: Vec<u8>) -> Result<(), DishusError> {
         let data = vault::open(&password, &blob)?;
-        *self.unlocked.lock().expect("vault lock") = Some(Unlocked { data, password: password.into() });
+        *self.unlocked.lock().expect("vault lock") = Some(Unlocked {
+            data,
+            password: password.into(),
+        });
         Ok(())
     }
 
@@ -237,41 +278,59 @@ impl Core {
 
     pub fn forget_pc(&self, id: String) -> Result<(), DishusError> {
         self.with_vault(|u| {
-            u.data.pcs.retain(|p| data_encoding_hex(&p.endpoint_id) != id);
+            u.data
+                .pcs
+                .retain(|p| data_encoding_hex(&p.endpoint_id) != id);
             Ok(())
         })
     }
 
     pub fn set_relays(&self, settings: RelaySettings) -> Result<(), DishusError> {
         for r in &settings.relays {
-            r.parse::<iroh::RelayUrl>().map_err(|_| DishusError::InvalidInput { msg: format!("bad relay URL: {r}") })?;
+            r.parse::<iroh::RelayUrl>()
+                .map_err(|_| DishusError::InvalidInput {
+                    msg: format!("bad relay URL: {r}"),
+                })?;
         }
-        *self.net.lock().expect("net lock") =
-            NetConfig { relays: settings.relays, disable_relays: settings.disable_relays, local_test: false };
+        *self.net.lock().expect("net lock") = NetConfig {
+            relays: settings.relays,
+            disable_relays: settings.disable_relays,
+            local_test: false,
+        };
         self.drop_client(); // takes effect on the next connection
         Ok(())
     }
 
     pub fn relays(&self) -> RelaySettings {
         let n = self.net.lock().expect("net lock");
-        RelaySettings { relays: n.relays.clone(), disable_relays: n.disable_relays }
+        RelaySettings {
+            relays: n.relays.clone(),
+            disable_relays: n.disable_relays,
+        }
     }
 
     /// This phone's public id (shown in the UI so the user can match it with `dishus list`).
     pub fn phone_id(&self) -> Result<String, DishusError> {
-        self.with_vault(|u| Ok(iroh::SecretKey::from_bytes(&u.data.secret_key).public().to_string()))
+        self.with_vault(|u| {
+            Ok(iroh::SecretKey::from_bytes(&u.data.secret_key)
+                .public()
+                .to_string())
+        })
     }
 
     /// Redeem a `dishus://pair?...` link (from the QR code). Call `export_vault` afterwards.
     pub async fn pair(&self, link: String, device_name: String) -> Result<PcInfo, DishusError> {
-        let info = PairingInfo::from_uri(&link).map_err(|e| DishusError::InvalidInput { msg: e.to_string() })?;
+        let info = PairingInfo::from_uri(&link)
+            .map_err(|e| DishusError::InvalidInput { msg: e.to_string() })?;
         let client = self.client().await?;
         let pc = self
             .rt
             .spawn(async move { client.pair(&info, &device_name).await })
             .await
             .map_err(|e| DishusError::Internal { msg: e.to_string() })?
-            .map_err(|e| DishusError::Rejected { msg: format!("{e:#}") })?;
+            .map_err(|e| DishusError::Rejected {
+                msg: format!("{e:#}"),
+            })?;
         let out = PcInfo::from(&pc);
         self.with_vault(|u| {
             u.data.pcs.retain(|p| p.endpoint_id != pc.endpoint_id);
@@ -293,7 +352,9 @@ impl Core {
                 .iter()
                 .find(|p| data_encoding_hex(&p.endpoint_id) == pc_id)
                 .cloned()
-                .ok_or(DishusError::InvalidInput { msg: "unknown PC".into() })
+                .ok_or(DishusError::InvalidInput {
+                    msg: "unknown PC".into(),
+                })
         })?;
         let client = self.client().await?;
         let params = StreamParams::from(&settings);
@@ -303,13 +364,21 @@ impl Core {
             .await
             .map_err(|e| DishusError::Internal { msg: e.to_string() })?
             .map_err(net_err)?;
-        Ok(Arc::new(RemoteSession { session: Arc::new(session), handle: self.rt.handle().clone() }))
+        Ok(Arc::new(RemoteSession {
+            session: Arc::new(session),
+            handle: self.rt.handle().clone(),
+        }))
     }
 
     /// Update the stored expiry after an in-session renewal.
     pub fn record_renewal(&self, pc_id: String, expires_at: u64) -> Result<(), DishusError> {
         self.with_vault(|u| {
-            for p in u.data.pcs.iter_mut().filter(|p| data_encoding_hex(&p.endpoint_id) == pc_id) {
+            for p in u
+                .data
+                .pcs
+                .iter_mut()
+                .filter(|p| data_encoding_hex(&p.endpoint_id) == pc_id)
+            {
                 p.expires_at = expires_at;
             }
             Ok(())
@@ -335,7 +404,9 @@ pub struct RemoteSession {
 
 impl RemoteSession {
     fn send(&self, m: ClientMsg) -> Result<(), DishusError> {
-        self.session.send(m).map_err(|e| DishusError::InvalidInput { msg: format!("{e:#}") })
+        self.session.send(m).map_err(|e| DishusError::InvalidInput {
+            msg: format!("{e:#}"),
+        })
     }
 }
 
@@ -354,7 +425,11 @@ impl RemoteSession {
             0 => MouseButton::Left,
             1 => MouseButton::Right,
             2 => MouseButton::Middle,
-            _ => return Err(DishusError::InvalidInput { msg: "button".into() }),
+            _ => {
+                return Err(DishusError::InvalidInput {
+                    msg: "button".into(),
+                });
+            }
         };
         self.send(ClientMsg::MouseButton { button, down })
     }
@@ -377,31 +452,72 @@ impl RemoteSession {
 
     pub async fn next_control(&self) -> Option<ControlEvent> {
         let s = self.session.clone();
-        let msg = self.handle.spawn(async move { s.next_control().await }).await.ok().flatten();
+        let msg = self
+            .handle
+            .spawn(async move { s.next_control().await })
+            .await
+            .ok()
+            .flatten();
         Some(match msg {
-            None => ControlEvent::Closed { reason: "connection closed".into() },
-            Some(ServerMsg::Welcome { pc_name, monitors, expires_at, .. }) => ControlEvent::Welcome {
+            None => ControlEvent::Closed {
+                reason: "connection closed".into(),
+            },
+            Some(ServerMsg::Welcome {
+                pc_name,
+                monitors,
+                expires_at,
+                ..
+            }) => ControlEvent::Welcome {
                 pc_name,
                 monitors: monitors
                     .into_iter()
-                    .map(|m| Monitor { index: m.index, name: m.name, width: m.width, height: m.height })
+                    .map(|m| Monitor {
+                        index: m.index,
+                        name: m.name,
+                        width: m.width,
+                        height: m.height,
+                    })
                     .collect(),
                 expires_at,
             },
-            Some(ServerMsg::StreamInfo { monitor, width, height, fps, bitrate_kbps, encoder }) => {
-                ControlEvent::StreamInfo { monitor, width, height, fps, bitrate_kbps, encoder }
-            }
+            Some(ServerMsg::StreamInfo {
+                monitor,
+                width,
+                height,
+                fps,
+                bitrate_kbps,
+                encoder,
+            }) => ControlEvent::StreamInfo {
+                monitor,
+                width,
+                height,
+                fps,
+                bitrate_kbps,
+                encoder,
+            },
             Some(ServerMsg::Renewed { expires_at }) => ControlEvent::Renewed { expires_at },
             Some(ServerMsg::Notice { message, .. }) => ControlEvent::Notice { message },
-            Some(ServerMsg::Bye { reason }) => ControlEvent::Closed { reason: format!("{reason:?}") },
+            Some(ServerMsg::Bye { reason }) => ControlEvent::Closed {
+                reason: format!("{reason:?}"),
+            },
             Some(ServerMsg::Pong { .. }) => return None, // never forwarded by Session
         })
     }
 
     pub async fn next_video(&self) -> Option<VideoFrame> {
         let s = self.session.clone();
-        let p = self.handle.spawn(async move { s.next_video().await }).await.ok().flatten()?;
-        Some(VideoFrame { seq: p.header.seq, pts_us: p.header.pts_us, keyframe: p.header.is_keyframe(), data: p.data.to_vec() })
+        let p = self
+            .handle
+            .spawn(async move { s.next_video().await })
+            .await
+            .ok()
+            .flatten()?;
+        Some(VideoFrame {
+            seq: p.header.seq,
+            pts_us: p.header.pts_us,
+            keyframe: p.header.is_keyframe(),
+            data: p.data.to_vec(),
+        })
     }
 
     pub fn rtt_ms(&self) -> u64 {

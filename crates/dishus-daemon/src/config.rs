@@ -19,7 +19,7 @@ pub struct Config {
     pub disable_relays: bool,
     /// Lifetime of a new pairing, days (1..=60).
     pub expiry_days: u16,
-    /// Pairing window length, seconds (10..=300).
+    /// Pairing window length, seconds (10..=60; the spec caps the token TTL at 60 s).
     pub pairing_ttl_secs: u64,
     /// Fixed UDP port for direct connections (0 = random). Not a listening TCP port; QUIC only
     /// answers peers that pass the allowlist gate. Set it only if you forward it on your router.
@@ -88,8 +88,8 @@ impl Config {
         if !(1..=MAX_EXPIRY_DAYS).contains(&self.expiry_days) {
             bail!("expiry_days must be within 1..={MAX_EXPIRY_DAYS}");
         }
-        if !(10..=300).contains(&self.pairing_ttl_secs) {
-            bail!("pairing_ttl_secs must be within 10..=300");
+        if !(10..=60).contains(&self.pairing_ttl_secs) {
+            bail!("pairing_ttl_secs must be within 10..=60");
         }
         for r in &self.relays {
             let u: iroh::RelayUrl = r.parse().with_context(|| format!("bad relay url {r}"))?;
@@ -185,5 +185,13 @@ mod tests {
         };
         assert!(c.validate().is_err());
         assert!(toml::from_str::<Config>("bogus_key = 1").is_err());
+        let c = Config {
+            pairing_ttl_secs: 61,
+            ..Default::default()
+        };
+        assert!(
+            c.validate().is_err(),
+            "pairing token TTL must not exceed 60 s"
+        );
     }
 }

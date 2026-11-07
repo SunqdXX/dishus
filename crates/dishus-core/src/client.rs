@@ -47,7 +47,10 @@ impl NetConfig {
         let urls = self
             .relays
             .iter()
-            .map(|r| r.parse::<RelayUrl>().with_context(|| format!("bad relay url {r}")))
+            .map(|r| {
+                r.parse::<RelayUrl>()
+                    .with_context(|| format!("bad relay url {r}"))
+            })
             .collect::<Result<Vec<_>>>()?;
         Ok(RelayMode::custom(urls))
     }
@@ -84,7 +87,9 @@ impl Client {
             Endpoint::builder(presets::N0)
         };
         b = b.secret_key(sk).relay_mode(net.relay_mode()?);
-        Ok(Self { endpoint: b.bind().await? })
+        Ok(Self {
+            endpoint: b.bind().await?,
+        })
     }
 
     pub fn endpoint_id(&self) -> EndpointId {
@@ -118,7 +123,10 @@ impl Client {
             .context("pairing refused")?;
         conn.close(0u32.into(), b"");
         match resp {
-            PairResponse::Accepted { pc_name, expires_at } => Ok(PairedPc {
+            PairResponse::Accepted {
+                pc_name,
+                expires_at,
+            } => Ok(PairedPc {
                 endpoint_id: info.endpoint_id,
                 name: pc_name,
                 relays: info.relays.clone(),
@@ -129,7 +137,12 @@ impl Client {
         }
     }
 
-    pub async fn connect(&self, pc: &PairedPc, device_name: &str, params: StreamParams) -> Result<Session> {
+    pub async fn connect(
+        &self,
+        pc: &PairedPc,
+        device_name: &str,
+        params: StreamParams,
+    ) -> Result<Session> {
         let addr = pc_addr(&pc.endpoint_id, &pc.relays, &pc.addrs)?;
         let conn = timeout(CONNECT_TIMEOUT, self.endpoint.connect(addr, ALPN_SESSION))
             .await
@@ -197,7 +210,10 @@ impl Session {
                     _ = hb.tick() => ClientMsg::Ping { t: mono_ms(start) },
                 };
                 let bye = matches!(msg, ClientMsg::Bye);
-                if write_frame(&mut send, &msg, MAX_CONTROL_FRAME).await.is_err() {
+                if write_frame(&mut send, &msg, MAX_CONTROL_FRAME)
+                    .await
+                    .is_err()
+                {
                     break;
                 }
                 if bye {
@@ -273,7 +289,10 @@ impl Session {
                 if need_key {
                     continue;
                 }
-                let pkt = VideoPacket { header: h, data: Bytes::copy_from_slice(payload) };
+                let pkt = VideoPacket {
+                    header: h,
+                    data: Bytes::copy_from_slice(payload),
+                };
                 match vid_tx.try_send(pkt) {
                     Ok(()) => {}
                     Err(mpsc::error::TrySendError::Full(_)) => {
@@ -299,7 +318,9 @@ impl Session {
     /// Queue a message. Validated locally first so the PC never has to drop us for garbage.
     pub fn send(&self, msg: ClientMsg) -> Result<()> {
         msg.validate().map_err(|e| anyhow::anyhow!(e))?;
-        self.tx.try_send(msg).map_err(|_| anyhow::anyhow!("session closed or congested"))
+        self.tx
+            .try_send(msg)
+            .map_err(|_| anyhow::anyhow!("session closed or congested"))
     }
 
     pub async fn next_control(&self) -> Option<ServerMsg> {
