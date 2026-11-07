@@ -323,6 +323,15 @@ impl Session {
             .map_err(|_| anyhow::anyhow!("session closed or congested"))
     }
 
+    /// Test hook: queue a message WITHOUT local validation, to check that the PC rejects it on
+    /// its own. Never used by the app.
+    #[doc(hidden)]
+    pub fn send_unchecked(&self, msg: ClientMsg) -> Result<()> {
+        self.tx
+            .try_send(msg)
+            .map_err(|_| anyhow::anyhow!("session closed or congested"))
+    }
+
     pub async fn next_control(&self) -> Option<ServerMsg> {
         self.control_rx.lock().await.recv().await
     }
