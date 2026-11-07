@@ -173,6 +173,42 @@ impl InputSink for NullInput {
     }
 }
 
+/// Test sink: appends one line per event to a file instead of injecting input. Selected with
+/// `DISHUS_INPUT=record:<path>`; used to drive the daemon from a real phone without touching the
+/// desktop. Format: `key <code> <0|1>`, `btn <name> <0|1>`, `move <dx> <dy>`, `scroll <dx> <dy>`.
+pub struct RecordInput(std::fs::File);
+
+impl RecordInput {
+    pub fn open(path: &std::path::Path) -> std::io::Result<Self> {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(path)
+            .map(Self)
+    }
+    fn line(&mut self, s: std::fmt::Arguments<'_>) -> std::io::Result<()> {
+        use std::io::Write;
+        writeln!(self.0, "{s}")
+    }
+}
+
+impl InputSink for RecordInput {
+    fn key(&mut self, code: u16, down: bool) -> std::io::Result<()> {
+        self.line(format_args!("key {code} {}", down as u8))
+    }
+    fn button(&mut self, button: MouseButton, down: bool) -> std::io::Result<()> {
+        self.line(format_args!("btn {button:?} {}", down as u8))
+    }
+    fn motion(&mut self, dx: i32, dy: i32) -> std::io::Result<()> {
+        self.line(format_args!("move {dx} {dy}"))
+    }
+    fn scroll(&mut self, dx: i32, dy: i32) -> std::io::Result<()> {
+        self.line(format_args!("scroll {dx} {dy}"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

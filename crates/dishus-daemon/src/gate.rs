@@ -2,7 +2,10 @@
 //!
 //! 1. **Incoming filter** (before the TLS handshake): relayed connections already carry the
 //!    sender's EndpointId, so unknown ids are silently ignored unless the pairing window is open.
-//!    Direct UDP connections must pass QUIC address validation (Retry) and a per-IP rate limit.
+//!    Direct UDP connections get a per-IP handshake rate limit. (No QUIC Retry: iroh's client
+//!    sends its Initial over several paths at once, and a Retry token is bound to one source
+//!    address, so the copies arriving from other addresses made the server abort with "invalid
+//!    retry token". QUIC's 3x anti-amplification limit still applies before validation.)
 //! 2. **`after_handshake` hook**: the TLS handshake has proven the peer's EndpointId. Session
 //!    connections must be on the allowlist and unexpired; pairing connections require the
 //!    pairing window to be open. Anything else is closed with code 0 and no reason.
@@ -68,9 +71,6 @@ pub fn incoming_filter(state: Arc<AppState>) -> iroh::protocol::IncomingFilter {
             }
         }
         IncomingAddr::Ip(addr) => {
-            if !incoming.remote_addr_validated() {
-                return IncomingFilterOutcome::Retry;
-            }
             if state
                 .limiter
                 .lock()

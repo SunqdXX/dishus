@@ -38,8 +38,11 @@ Admission happens in three layers:
 1. **`incoming_filter` (before the QUIC handshake).**
    - Over a relay, iroh tells us the claimed peer ID up front. Unknown IDs are **silently
      ignored** unless the pairing window is open.
-   - Direct UDP connections must first pass a QUIC Retry (address validation, so no amplification),
-     then a per-IP rate limit of 30 handshakes per 60 s.
+   - Direct UDP connections are subject to a per-IP rate limit of 30 handshakes per 60 s. QUIC's
+     anti-amplification rule (at most 3x the bytes received before the address is validated)
+     prevents reflection attacks. A QUIC Retry is deliberately **not** used: iroh sends its first
+     packet over several paths at once, and a Retry token bound to one source address made
+     legitimate reconnects fail ("invalid retry token").
 2. **`after_handshake` hook (TLS done, no stream accepted yet).**
    - `dishus/session/1`: the peer's TLS-proven ID must be on the allowlist, must not be expired,
      and the daemon must not be in lockdown.

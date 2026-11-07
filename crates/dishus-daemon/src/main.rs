@@ -25,6 +25,16 @@ fn usage() -> ! {
 }
 
 fn make_input() -> (Box<dyn InputSink>, String) {
+    // Test hook: `DISHUS_INPUT=record:<file>` logs input instead of injecting it.
+    if let Some(path) = std::env::var("DISHUS_INPUT")
+        .ok()
+        .and_then(|v| v.strip_prefix("record:").map(std::path::PathBuf::from))
+    {
+        match dishus_daemon::backend::RecordInput::open(&path) {
+            Ok(r) => return (Box::new(r), format!("record:{}", path.display())),
+            Err(e) => tracing::error!("DISHUS_INPUT record file {}: {e}", path.display()),
+        }
+    }
     #[cfg(feature = "uinput")]
     {
         match dishus_daemon::input::UinputSink::new() {
