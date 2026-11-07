@@ -16,7 +16,7 @@ use crate::{net::pairing_info, state::AppState};
 pub struct IpcContext {
     pub state: Arc<AppState>,
     pub endpoint: Endpoint,
-    pub capture_backend: String,
+    pub capture_backend: std::sync::RwLock<String>,
     pub input_backend: String,
 }
 
@@ -82,7 +82,7 @@ async fn handle(ctx: &IpcContext, req: IpcRequest) -> IpcResponse {
                 pairing_open: st.is_pairing_open(),
                 sessions,
                 devices: st.devices.read().expect("devices").list().len(),
-                capture_backend: ctx.capture_backend.clone(),
+                capture_backend: ctx.capture_backend.read().expect("capture desc").clone(),
                 input_backend: ctx.input_backend.clone(),
             })
         }

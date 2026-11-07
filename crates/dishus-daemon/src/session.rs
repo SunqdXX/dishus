@@ -386,7 +386,7 @@ async fn video_task(
             bitrate_kbps: abr.bitrate,
             max_height: params.max_height,
         };
-        let mut stream: EncodedStream = match capture.start_stream(cfg) {
+        let mut stream: EncodedStream = match capture.start_stream(cfg).await {
             Ok(s) => s,
             Err(e) => {
                 tracing::error!("starting video stream: {e:#}");

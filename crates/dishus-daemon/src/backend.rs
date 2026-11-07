@@ -3,9 +3,14 @@
 
 use std::{collections::BTreeSet, sync::Arc};
 
+use std::{future::Future, pin::Pin};
+
 use bytes::Bytes;
-use n0_future::boxed::BoxFuture;
 use tokio::sync::mpsc;
+
+/// Boxed future that may borrow (`'a`).
+pub type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+pub type BoxFuture<T> = BoxFut<'static, T>;
 
 use dishus_proto::{MonitorInfo, MouseButton};
 
@@ -120,7 +125,8 @@ pub struct EncodedStream {
 /// An open capture permission (e.g. a portal ScreenCast session) covering one or more monitors.
 pub trait CaptureSession: Send {
     fn monitors(&self) -> Vec<MonitorInfo>;
-    fn start_stream(&mut self, cfg: StreamConfig) -> anyhow::Result<EncodedStream>;
+    /// Start (or restart) encoding one monitor. Any previous stream must be dropped first.
+    fn start_stream(&mut self, cfg: StreamConfig) -> BoxFut<'_, anyhow::Result<EncodedStream>>;
 }
 
 pub trait CaptureProvider: Send + Sync {

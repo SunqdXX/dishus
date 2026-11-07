@@ -13,8 +13,8 @@ use bytes::Bytes;
 use dishus_core::{Client, NetConfig, PairedPc, Session, vault};
 use dishus_daemon::{
     backend::{
-        CaptureProvider, CaptureSession, EncodedStream, InputSink, StreamConfig, StreamControl,
-        TrackedInput, VideoFrame,
+        BoxFut, BoxFuture, CaptureProvider, CaptureSession, EncodedStream, InputSink, StreamConfig,
+        StreamControl, TrackedInput, VideoFrame,
     },
     config::Config,
     devices::DeviceStore,
@@ -28,7 +28,6 @@ use dishus_proto::{
     ServerMsg, StreamParams, write_frame,
 };
 use iroh::{SecretKey, protocol::Router};
-use n0_future::boxed::BoxFuture;
 use tokio::{sync::mpsc, time::timeout};
 
 // ---------- fakes ----------
@@ -77,7 +76,13 @@ impl CaptureSession for FakeCaptureSession {
     fn monitors(&self) -> Vec<MonitorInfo> {
         vec![MonitorInfo { index: 0, name: "FAKE-1".into(), width: 640, height: 360 }]
     }
-    fn start_stream(&mut self, _cfg: StreamConfig) -> anyhow::Result<EncodedStream> {
+    fn start_stream(&mut self, _cfg: StreamConfig) -> BoxFut<'_, anyhow::Result<EncodedStream>> {
+        Box::pin(async { fake_stream() })
+    }
+}
+
+fn fake_stream() -> anyhow::Result<EncodedStream> {
+    {
         let (tx, rx) = mpsc::channel(4);
         let ctl = Arc::new(FakeCtl { key: AtomicBool::new(true) });
         let c2 = ctl.clone();

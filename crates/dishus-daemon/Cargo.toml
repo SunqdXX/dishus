@@ -23,7 +23,7 @@ uinput = ["dep:evdev"]
 [dependencies]
 dishus-proto.workspace = true
 iroh.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["process"] }
 serde.workspace = true
 toml.workspace = true
 thiserror.workspace = true
@@ -35,7 +35,7 @@ zeroize.workspace = true
 data-encoding.workspace = true
 bytes.workspace = true
 getrandom = "0.4"
-rustix = { version = "1", features = ["process", "system"] }
+rustix = { version = "1", features = ["process", "system", "fs"] }
 zbus = { version = "6", default-features = false, features = ["tokio"] }
 n0-future = "0.3"
 

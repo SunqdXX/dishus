@@ -1,5 +1,22 @@
 [package]
-name="dishus-cli"
-version.workspace=true
-edition.workspace=true
-license.workspace=true
+name = "dishus-cli"
+description = "DiShus command line: pair, list, revoke, renew, status, kill"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "dishus"
+path = "src/main.rs"
+
+[dependencies]
+dishus-proto.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time", "io-util", "macros"] }
+clap.workspace = true
+anyhow.workspace = true
+toml.workspace = true
+qrcode = { version = "0.14", default-features = false }
+
+[lints]
+workspace = true

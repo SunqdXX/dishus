@@ -43,3 +43,13 @@
 11. **GStreamer** over ffmpeg bindings: it already has the PipeWire source and NVENC/VA/x264
     encoders as plugins, and the Rust bindings are mature. The daemon links only `gstreamer`,
     `gstreamer-app`, `gstreamer-video`.
+12. **Capture/encode runs in a per-session worker process** (`dishus-daemon --capture-worker`).
+    Measured on RTX 5070 Ti: any process that loads NVENC carries ~300 MB RSS (NVIDIA userspace
+    driver mappings; ~90 MB anonymous), and GStreamer keeps the CUDA context alive after the
+    pipeline stops. Splitting it out keeps the network-facing daemon at ~26 MB, means nothing
+    GPU-related is resident between sessions, and isolates media-stack crashes from the process
+    that owns the input devices.
+13. **No CUDA colour conversion unless downscaling.** NVENC takes BGRx from system memory directly;
+    `cudaconvertscale` would pull in NVRTC (~100 MB). With `max_height` set, `cudascale` is used.
+14. **Zero-copy DMA-BUF capture is not implemented yet.** PipeWire is forced to SHM buffers; one
+    memcpy per frame. A DMA-BUF → CUDA import path is future work.
