@@ -1,6 +1,6 @@
 [Unit]
 Description=DiShus remote control daemon (phone -> this PC)
-Documentation=https://github.com/dishus/dishus
+Documentation=https://github.com/SunqdXX/dishus
 # Not bound to graphical-session.target on purpose: Hyprland without uwsm never starts it.
 # Networking and input work without a graphical session; screen capture is opened lazily per
 # connection through the portal.

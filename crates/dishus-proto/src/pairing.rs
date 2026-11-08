@@ -179,7 +179,7 @@ mod tests {
         PairingInfo {
             endpoint_id: [7; 32],
             token: [9; 32],
-            pc_name: "sunqd's desk & co".into(),
+            pc_name: "alice's desk & co".into(),
             relays: vec!["https://euc1-1.relay.n0.iroh-canary.iroh.link./".into()],
             addrs: vec!["192.168.1.10:41641".into(), "[fe80::1]:5000".into()],
         }

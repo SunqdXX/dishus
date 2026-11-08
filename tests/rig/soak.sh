@@ -2,10 +2,11 @@
 # Run every PC-side scenario N times against an isolated rig daemon; asserts on the recorded input.
 # usage: soak.sh <rig-name> <mode> [N]
 set -uo pipefail
-R=${SOAK_STATE:-/run/user/1000/dishus-soak}; mkdir -p "$R"; RIG=$(dirname "$0")/rig.sh
+RT=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+R=${SOAK_STATE:-$RT/dishus-soak}; mkdir -p "$R"; RIG=$(dirname "$0")/rig.sh
 NAME=${1:?}; MODE=${2:?}; N=${3:-10}
-SOAK=/home/sunqd/WORK/DiShush/target/release/examples/soak
-B=/run/user/1000/dr-$NAME; LOG=$B/input.log
+SOAK=$(cd "$(dirname "$0")/../.." && pwd)/target/release/examples/soak
+B=$RT/dr-$NAME; LOG=$B/input.log
 export DISHUS_CLIENT_DIR=$R/soak-$NAME DISHUS_CLIENT_PASSWORD=soak-test-password
 PASS=0; FAIL=0; declare -A FAILS
 ok()   { PASS=$((PASS+1)); }

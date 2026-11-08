@@ -5,7 +5,7 @@ pkgver=0.1.0
 pkgrel=1
 pkgdesc="Control this Linux PC from your Android phone, peer-to-peer over iroh (daemon + CLI)"
 arch=('x86_64' 'aarch64')
-url="https://github.com/dishus/dishus"
+url="https://github.com/SunqdXX/dishus"
 license=('MIT OR Apache-2.0')
 depends=(
   'gcc-libs' 'glibc'

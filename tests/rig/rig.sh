@@ -8,13 +8,14 @@
 #   rig.sh link <name>                          open pairing, print the dishus:// link
 #   rig.sh env <name>                           print the env used
 set -euo pipefail
-REPO=/home/sunqd/WORK/DiShush
+REPO=$(cd "$(dirname "$0")/../.." && pwd)
+RT=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 BIN=$REPO/target/release
-base() { echo "/run/user/1000/dr-$1"; }
+base() { echo "$RT/dr-$1"; }
 
 envof() {
   local b; b=$(base "$1")
-  echo "XDG_CONFIG_HOME=$b/cfg XDG_STATE_HOME=$b/state XDG_RUNTIME_DIR=$b/rt PIPEWIRE_RUNTIME_DIR=/run/user/1000"
+  echo "XDG_CONFIG_HOME=$b/cfg XDG_STATE_HOME=$b/state XDG_RUNTIME_DIR=$b/rt PIPEWIRE_RUNTIME_DIR=$RT"
 }
 
 cmd=${1:?}; name=${2:?}; b=$(base "$name")
@@ -36,7 +37,7 @@ case "$cmd" in
     common=(env $(envof "$name") DISHUS_LOG="${DISHUS_LOG:-info,dishus_daemon=debug}" DISHUS_INPUT="record:$b/input.log")
     case "$mode" in
       wayland)
-        nohup "${common[@]}" WAYLAND_DISPLAY=/run/user/1000/wayland-1 "$BIN/dishus-daemon" >"$b/daemon.log" 2>&1 &
+        nohup "${common[@]}" WAYLAND_DISPLAY="$RT/${WAYLAND_DISPLAY:-wayland-1}" "$BIN/dishus-daemon" >"$b/daemon.log" 2>&1 &
         echo $! > "$b/daemon.pid" ;;
       testsrc)
         nohup "${common[@]}" DISHUS_TEST_SOURCE=1 "$BIN/dishus-daemon" >"$b/daemon.log" 2>&1 &
