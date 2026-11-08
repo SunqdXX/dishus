@@ -16,9 +16,9 @@ use iroh::endpoint::{Connection, SendStream};
 use tokio::{sync::mpsc, time::timeout};
 
 use dishus_proto::{
-    ByeReason, ClientMsg, FrameError, MAX_CONTROL_FRAME, MonitorInfo, NoticeKind, PROTO_VERSION,
-    SESSION_IDLE_TIMEOUT_MS, ServerMsg, StreamParams, VideoHeader, read_frame,
-    video::FLAG_KEYFRAME, write_frame,
+    ByeReason, ClientMsg, FrameError, HEARTBEAT_INTERVAL_MS, MAX_CONTROL_FRAME, MonitorInfo,
+    NoticeKind, PROTO_VERSION, SESSION_IDLE_TIMEOUT_MS, ServerMsg, StreamParams, VideoHeader,
+    read_frame, video::FLAG_KEYFRAME, write_frame,
 };
 
 use crate::{
@@ -30,6 +30,9 @@ use crate::{
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 const CAPTURE_OPEN_TIMEOUT: Duration = Duration::from_secs(15);
 const EXPIRY_CHECK: Duration = Duration::from_secs(15);
+/// Release held input after this long without any message (heartbeats come every second).
+const RELEASE_ON_SILENCE: Duration = Duration::from_millis(2 * HEARTBEAT_INTERVAL_MS + 500);
+const SILENCE_CHECK: Duration = Duration::from_millis(250);
 /// Frames allowed in flight (sent, not yet fully acknowledged) before we start dropping.
 const MAX_INFLIGHT: usize = 4;
 /// A frame not delivered within this is reset; the next frame sent is an IDR.
@@ -152,27 +155,59 @@ pub async fn handle(state: Arc<AppState>, conn: Connection) -> Result<()> {
         ))
     });
 
+    // Reader task: a frame half-read when some other select! branch fires would be lost (and
+    // the stream misparsed), so reading never happens inside the select below.
+    let (msg_tx, mut msg_rx) = mpsc::channel::<Result<ClientMsg, FrameError>>(64);
+    let reader = tokio::spawn(async move {
+        loop {
+            let r = read_frame::<_, ClientMsg>(&mut recv, MAX_CONTROL_FRAME).await;
+            let last = r.is_err();
+            if msg_tx.send(r).await.is_err() || last {
+                break;
+            }
+        }
+    });
+
     let idle = Duration::from_millis(SESSION_IDLE_TIMEOUT_MS);
+    let mut last_rx = tokio::time::Instant::now();
+    let mut held_released = true;
+    let mut silence = tokio::time::interval(SILENCE_CHECK);
+    silence.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut expiry = tokio::time::interval(EXPIRY_CHECK);
     expiry.tick().await;
     let reason = loop {
         tokio::select! {
-            r = timeout(idle, read_frame::<_, ClientMsg>(&mut recv, MAX_CONTROL_FRAME)) => {
+            r = msg_rx.recv() => {
                 let msg = match r {
-                    Err(_) => break ByeReason::Timeout,
-                    Ok(Err(FrameError::Closed)) => break ByeReason::Normal,
-                    Ok(Err(e)) => {
+                    None | Some(Err(FrameError::Closed)) => break ByeReason::Normal,
+                    Some(Err(e)) => {
                         tracing::warn!("{name}: protocol error: {e}");
                         break ByeReason::ProtocolError;
                     }
-                    Ok(Ok(m)) => m,
+                    Some(Ok(m)) => m,
                 };
+                last_rx = tokio::time::Instant::now();
+                held_released = false;
                 match handle_msg(&state, &peer, msg, &out_tx, &vid_tx).await {
                     Ok(true) => {}
                     Ok(false) => break ByeReason::Normal,
                     Err(e) => {
                         tracing::warn!("{name}: {e:#}");
                         break ByeReason::ProtocolError;
+                    }
+                }
+            }
+            _ = tokio::time::sleep_until(last_rx + idle) => break ByeReason::Timeout,
+            _ = silence.tick() => {
+                // Nothing (not even a heartbeat) for a while: the network is probably switching
+                // or gone. Let go of held keys/buttons now, so nothing auto-repeats until the
+                // session times out; a late "up" from the phone is ignored by TrackedInput.
+                if !held_released && last_rx.elapsed() >= RELEASE_ON_SILENCE {
+                    held_released = true;
+                    let held = state.input.lock().expect("input lock").held();
+                    if held != (0, 0) {
+                        tracing::info!("{name}: phone silent; released held input {held:?}");
+                        state.release_input();
                     }
                 }
             }
@@ -188,6 +223,7 @@ pub async fn handle(state: Arc<AppState>, conn: Connection) -> Result<()> {
             _ = conn.closed() => break ByeReason::Normal,
         }
     };
+    reader.abort();
     tracing::info!("{name}: session ended ({reason:?})");
     // Release input *before* anything that can block.
     state.release_input();

@@ -490,14 +490,99 @@ async fn silent_phone_times_out_and_keys_release() {
     .await
     .unwrap();
     wait_for(|| pc.input.log().contains(&"key 56 down".to_string())).await;
-    // now silence; the daemon must release within SESSION_IDLE_TIMEOUT (5 s) + slack
-    timeout(Duration::from_secs(9), async {
+    // Now silence (a network blackout looks like this). Held input must be released long
+    // before the session times out, so a held key can't auto-repeat for seconds...
+    let t = std::time::Instant::now();
+    timeout(Duration::from_secs(4), async {
         while !pc.input.log().contains(&"key 56 up".to_string()) {
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })
     .await
-    .expect("stuck key was not released after heartbeat timeout");
+    .expect("held key was not released during silence");
+    assert!(
+        t.elapsed() >= Duration::from_millis(1500),
+        "released too eagerly ({:?}): one late heartbeat must not drop held keys",
+        t.elapsed()
+    );
+    // ...while the session itself survives (the phone may just be switching networks)...
+    assert!(
+        conn.close_reason().is_none(),
+        "session ended on short silence"
+    );
+    // ...and only ends at the idle timeout.
+    timeout(Duration::from_secs(6), conn.closed())
+        .await
+        .expect("silent session should time out");
+}
+
+/// A frame split across packets with a pause in the middle must not be lost: the session
+/// loop's other timers must never cancel a half-read frame.
+#[tokio::test(flavor = "multi_thread")]
+async fn split_frame_survives_timers() {
+    let pc = Pc::start().await;
+    let raw = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .clear_ip_transports()
+        .bind_addr("127.0.0.1:0")
+        .unwrap()
+        .relay_mode(iroh::RelayMode::Disabled)
+        .bind()
+        .await
+        .unwrap();
+    {
+        let mut d = pc.state.devices.write().unwrap();
+        d.add(&raw.id(), "raw", 1, dishus_daemon::devices::now_unix())
+            .unwrap();
+    }
+    let addr = iroh::EndpointAddr::from_parts(
+        pc.router.endpoint().id(),
+        pc.router
+            .endpoint()
+            .bound_sockets()
+            .into_iter()
+            .map(iroh::TransportAddr::Ip),
+    );
+    let conn = raw.connect(addr, ALPN_SESSION).await.unwrap();
+    let (mut send, _recv) = conn.open_bi().await.unwrap();
+    let hello = ClientMsg::Hello {
+        proto_version: PROTO_VERSION,
+        device_name: "raw".into(),
+        stream: StreamParams::default(),
+    };
+    write_frame(&mut send, &hello, 4096).await.unwrap();
+    let mut buf = Vec::new();
+    write_frame(
+        &mut buf,
+        &ClientMsg::Key {
+            code: 30,
+            down: true,
+        },
+        4096,
+    )
+    .await
+    .unwrap();
+    // pings keep the session alive; the key frame is split around them in time
+    let ping = |t| ClientMsg::Ping { t };
+    write_frame(&mut send, &ping(1), 4096).await.unwrap();
+    send.write_all(&buf[..3]).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    send.write_all(&buf[3..]).await.unwrap();
+    write_frame(&mut send, &ping(2), 4096).await.unwrap();
+    write_frame(
+        &mut send,
+        &ClientMsg::Key {
+            code: 30,
+            down: false,
+        },
+        4096,
+    )
+    .await
+    .unwrap();
+    wait_for(|| pc.input.log().contains(&"key 30 up".to_string())).await;
+    assert!(
+        conn.close_reason().is_none(),
+        "split frame broke the session"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
