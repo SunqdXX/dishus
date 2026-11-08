@@ -8,8 +8,12 @@ import java.nio.ByteBuffer
 
 /**
  * Hardware H.264 decode straight onto a Surface, tuned for latency:
- * synchronous MediaCodec, KEY_LOW_LATENCY where supported, every decoded frame rendered
- * immediately (no presentation-time pacing).
+ * KEY_LOW_LATENCY where supported, every decoded frame rendered immediately (no
+ * presentation-time pacing).
+ *
+ * Output is drained on its own thread. It used to be drained only when the next frame was fed,
+ * so the newest picture sat inside the codec until the PC sent another frame: on a real desktop
+ * (frames only when something changes) the phone always showed the screen one change behind.
  *
  * The PC sends SPS/PPS in-band before every IDR; we pull them out of the first IDR to configure
  * the codec. [feed] returns false when the caller should request a keyframe.
@@ -18,7 +22,12 @@ class H264Decoder(private val surface: Surface) {
     private var codec: MediaCodec? = null
     private var width = 1920
     private var height = 1080
-    private val info = MediaCodec.BufferInfo()
+    private var output: Thread? = null
+    @Volatile private var running = false
+    /** Frames handed to the Surface (for the video stats log). */
+    val rendered = java.util.concurrent.atomic.AtomicLong()
+    /** Set by the output thread when the codec failed; the next feed() resets it. */
+    @Volatile private var broken = false
 
     /** Called on StreamInfo: a new stream (possibly a different size) starts with an IDR. */
     fun reset(w: Int, h: Int) {
@@ -30,6 +39,7 @@ class H264Decoder(private val surface: Surface) {
 
     fun feed(data: ByteArray, ptsUs: Long, keyframe: Boolean): Boolean {
         try {
+            if (broken) release()
             val c = codec ?: run {
                 if (!keyframe) return false
                 val (sps, pps) = extractParameterSets(data) ?: return false
@@ -38,7 +48,6 @@ class H264Decoder(private val surface: Surface) {
             val idx = c.dequeueInputBuffer(20_000)
             if (idx < 0) {
                 // Decoder saturated: dropping this frame breaks the reference chain.
-                drain(c)
                 return false
             }
             val buf = c.getInputBuffer(idx) ?: return false
@@ -49,24 +58,30 @@ class H264Decoder(private val surface: Surface) {
             }
             buf.put(data)
             c.queueInputBuffer(idx, 0, data.size, ptsUs, if (keyframe) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
-            drain(c)
             return true
         } catch (e: MediaCodec.CodecException) {
+            android.util.Log.w("DishusVideo", "decoder input failed: $e")
             release()
             return false
         } catch (e: IllegalStateException) {
+            android.util.Log.w("DishusVideo", "decoder input failed: $e")
             release()
             return false
         }
     }
 
-    private fun drain(c: MediaCodec) {
-        while (true) {
-            val out = c.dequeueOutputBuffer(info, 0)
-            when {
-                out >= 0 -> c.releaseOutputBuffer(out, true)
-                out == MediaCodec.INFO_TRY_AGAIN_LATER -> return
-                else -> continue // format / buffers changed
+    /** Render every decoded frame as soon as it is ready. */
+    private fun drainLoop(c: MediaCodec) {
+        val info = MediaCodec.BufferInfo()
+        while (running) {
+            try {
+                val out = c.dequeueOutputBuffer(info, 10_000)
+                if (out >= 0) { c.releaseOutputBuffer(out, true); rendered.incrementAndGet() }
+                // else: timeout, or format / buffers changed: just loop
+            } catch (e: IllegalStateException) { // includes CodecException
+                if (running) android.util.Log.w("DishusVideo", "decoder output failed: $e")
+                if (running) broken = true // not a release() in progress: feed() resets
+                return
             }
         }
     }
@@ -83,10 +98,16 @@ class H264Decoder(private val surface: Surface) {
         c.configure(fmt, surface, null, 0)
         c.start()
         codec = c
+        broken = false
+        running = true
+        output = Thread({ drainLoop(c) }, "h264-output").apply { isDaemon = true; start() }
         return c
     }
 
     fun release() {
+        running = false
+        output?.let { runCatching { it.join(500) } }
+        output = null
         codec?.let { runCatching { it.stop() }; runCatching { it.release() } }
         codec = null
     }

@@ -1,6 +1,7 @@
 package org.dishus.app
 
 import android.os.Build
+import android.util.Log
 import android.view.Surface
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -211,14 +212,25 @@ class RemoteController(private val app: DishusApp, private val pcId: String) {
 
     private suspend fun videoLoop(s: RemoteSession) {
         var lastKfRequest = 0L
+        // Once a second in logcat (tag DishusVideo): where frames stop when the picture freezes.
+        var rx = 0; var fed = 0; var rejected = 0; var noDecoder = 0; var keys = 0; var kfReq = 0
+        var lastLog = System.currentTimeMillis()
         while (true) {
             val f = s.nextVideo() ?: return
-            val d = decoder ?: continue
+            rx++; if (f.keyframe) keys++
+            val now = System.currentTimeMillis()
+            if (now - lastLog >= 1000) {
+                Log.i("DishusVideo", "rx=$rx keys=$keys fed=$fed rejected=$rejected noDecoder=$noDecoder kfReq=$kfReq " +
+                    "rendered=${decoder?.rendered?.getAndSet(0)} surface=${surface != null}")
+                rx = 0; fed = 0; rejected = 0; noDecoder = 0; keys = 0; kfReq = 0; lastLog = now
+            }
+            val d = decoder ?: run { noDecoder++; null } ?: continue
             val ok = d.feed(f.data, f.ptsUs.toLong(), f.keyframe)
+            if (ok) fed++ else rejected++
             if (!ok) {
-                val now = System.currentTimeMillis()
                 if (now - lastKfRequest > 300) {
                     lastKfRequest = now
+                    kfReq++
                     runCatching { s.requestKeyframe() }
                 }
             }

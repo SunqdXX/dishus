@@ -62,7 +62,11 @@ fn params() -> StreamParams {
         monitor: 0,
         fps: 0,
         quality: Quality::Auto,
-        max_height: 0,
+        // DISHUS_SOAK_HEIGHT=720: same as the phone's 720p setting
+        max_height: std::env::var("DISHUS_SOAK_HEIGHT")
+            .ok()
+            .and_then(|h| h.parse().ok())
+            .unwrap_or(0),
     }
 }
 
@@ -233,9 +237,33 @@ async fn main() -> Result<()> {
             let end = Instant::now() + Duration::from_secs(secs);
             let (mut frames, mut keys, mut gaps, mut last) = (0u64, 0u64, 0u64, None::<u64>);
             let mut first_ms = None;
+            // DISHUS_SOAK_TRACE=1: one line per second (frames, keyframes, bytes, longest gap)
+            let trace = std::env::var_os("DISHUS_SOAK_TRACE").is_some();
+            let (mut sec, mut sf, mut sk, mut sb) = (0u64, 0u64, 0u64, 0usize);
+            let (mut last_at, mut max_gap) = (Instant::now(), Duration::ZERO);
+            // DISHUS_SOAK_KF_EVERY=N: ask for a keyframe every N seconds (like a phone recovering)
+            let kf_every: Option<u64> = std::env::var("DISHUS_SOAK_KF_EVERY")
+                .ok()
+                .and_then(|v| v.parse().ok());
             while Instant::now() < end {
-                match tokio::time::timeout(Duration::from_millis(500), s.next_video()).await {
+                if trace && t0.elapsed().as_secs() > sec {
+                    eprintln!(
+                        "t={sec:>3}s frames={sf:>3} keys={sk} kB={:>5} max_gap_ms={}",
+                        sb / 1024,
+                        max_gap.as_millis()
+                    );
+                    (sec, sf, sk, sb, max_gap) = (t0.elapsed().as_secs(), 0, 0, 0, Duration::ZERO);
+                    if kf_every.is_some_and(|n| sec % n == 0) {
+                        let _ = s.send(ClientMsg::RequestKeyframe);
+                    }
+                }
+                match tokio::time::timeout(Duration::from_millis(100), s.next_video()).await {
                     Ok(Some(p)) => {
+                        max_gap = max_gap.max(last_at.elapsed());
+                        last_at = Instant::now();
+                        sf += 1;
+                        sk += p.header.is_keyframe() as u64;
+                        sb += p.data.len();
                         first_ms.get_or_insert(t0.elapsed().as_millis());
                         frames += 1;
                         keys += p.header.is_keyframe() as u64;
