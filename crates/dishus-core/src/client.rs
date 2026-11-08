@@ -268,6 +268,21 @@ const NET_CHANGE_SILENT_MS: u64 = 2 * HEARTBEAT_INTERVAL_MS + 500;
 /// How long after a network change the short limit applies.
 const NET_CHANGE_WINDOW: Duration = Duration::from_secs(20);
 
+/// With video running, this long without a frame means it got stuck; the PC sends at least ~2 fps
+/// even for a still screen (the capture re-sends the last image every 500 ms).
+const VIDEO_STALL_MS: u64 = 1500;
+/// How often to repeat the keyframe request while stuck.
+const VIDEO_REREQUEST_MS: u64 = 1000;
+
+/// Should the watchdog ask for a keyframe? `last_video_ms`: last frame delivered (None = video
+/// never started, e.g. no capture: nothing to recover).
+fn video_stalled(now_ms: u64, last_video_ms: Option<u64>, last_request_ms: u64) -> bool {
+    last_video_ms.is_some_and(|t| {
+        now_ms.saturating_sub(t) > VIDEO_STALL_MS
+            && now_ms.saturating_sub(last_request_ms) >= VIDEO_REREQUEST_MS
+    })
+}
+
 /// Watchdog decision. `last_rx_ms`: when the PC last sent anything (None = nothing yet).
 fn pc_gone(now_ms: u64, last_rx_ms: Option<u64>, net_changed_recently: bool) -> bool {
     match last_rx_ms {
@@ -315,6 +330,8 @@ impl Session {
         let closed = Arc::new(AtomicBool::new(false));
         let timed_out = Arc::new(AtomicBool::new(false));
         let last_rx = Arc::new(AtomicU64::new(0));
+        // When the last video frame was delivered (ms since start + 1; 0 = none yet).
+        let last_video = Arc::new(AtomicU64::new(0));
         let start = Instant::now();
 
         // Writer + heartbeat.
@@ -373,10 +390,25 @@ impl Session {
         let wd_conn = conn.clone();
         let wd_closed = closed.clone();
         let wd_timed_out = timed_out.clone();
+        let wd_tx = tx.clone();
+        let wd_last_video = last_video.clone();
         let watchdog = tokio::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_millis(250));
+            let mut last_kf_req = 0u64;
             loop {
                 tick.tick().await;
+                let now = mono_ms(start);
+                // Video stopped while the session lives (a lost keyframe request on the PC used to
+                // freeze the picture for good): keep asking for a fresh IDR.
+                if video_stalled(
+                    now,
+                    wd_last_video.load(Ordering::Relaxed).checked_sub(1),
+                    last_kf_req,
+                ) {
+                    last_kf_req = now;
+                    tracing::debug!("no video for {VIDEO_STALL_MS} ms; requesting a keyframe");
+                    let _ = wd_tx.try_send(ClientMsg::RequestKeyframe);
+                }
                 let last = last_rx.load(Ordering::Relaxed);
                 let recent = net_changed
                     .lock()
@@ -397,6 +429,7 @@ impl Session {
         // Video receiver: streams are accepted in stream-id order, which is frame order.
         let v_conn = conn.clone();
         let v_tx = tx.clone();
+        let v_last = last_video.clone();
         let video = tokio::spawn(async move {
             let mut last_seq = 0u64;
             let mut need_key = true;
@@ -434,6 +467,7 @@ impl Session {
                 if need_key {
                     continue;
                 }
+                v_last.store(mono_ms(start) + 1, Ordering::Relaxed);
                 let pkt = VideoPacket {
                     header: h,
                     data: Bytes::copy_from_slice(payload),
@@ -543,5 +577,17 @@ mod tests {
         assert!(pc_gone(10_001 + NET_CHANGE_SILENT_MS, Some(10_000), true));
         // ...but never shorter than a heartbeat round (a healthy session is never cut).
         const { assert!(NET_CHANGE_SILENT_MS > 2 * HEARTBEAT_INTERVAL_MS) };
+    }
+
+    #[test]
+    fn video_stall_rules() {
+        // no video yet (e.g. capture unavailable): never
+        assert!(!video_stalled(60_000, None, 0));
+        // flowing
+        assert!(!video_stalled(10_000, Some(10_000 - VIDEO_STALL_MS), 0));
+        // stuck: ask, then at most once per VIDEO_REREQUEST_MS
+        assert!(video_stalled(10_000, Some(8_000), 0));
+        assert!(!video_stalled(10_500, Some(8_000), 10_000));
+        assert!(video_stalled(11_000, Some(8_000), 10_000));
     }
 }

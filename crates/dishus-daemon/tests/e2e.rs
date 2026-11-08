@@ -77,7 +77,11 @@ impl StreamControl for FakeCtl {
     fn set_fps(&self, _: u8) {}
 }
 
-struct FakeCaptureSession;
+/// `stall_after`: the fake encoder stops producing frames after this many, until a keyframe is
+/// forced (models the lost-keyframe-request freeze).
+struct FakeCaptureSession {
+    stall_after: Option<u64>,
+}
 impl CaptureSession for FakeCaptureSession {
     fn monitors(&self) -> Vec<MonitorInfo> {
         vec![MonitorInfo {
@@ -88,11 +92,12 @@ impl CaptureSession for FakeCaptureSession {
         }]
     }
     fn start_stream(&mut self, _cfg: StreamConfig) -> BoxFut<'_, anyhow::Result<EncodedStream>> {
-        Box::pin(async { fake_stream() })
+        let stall = self.stall_after;
+        Box::pin(async move { fake_stream(stall) })
     }
 }
 
-fn fake_stream() -> anyhow::Result<EncodedStream> {
+fn fake_stream(stall_after: Option<u64>) -> anyhow::Result<EncodedStream> {
     {
         let (tx, rx) = mpsc::channel(4);
         let ctl = Arc::new(FakeCtl {
@@ -101,8 +106,13 @@ fn fake_stream() -> anyhow::Result<EncodedStream> {
         let c2 = ctl.clone();
         let task = tokio::spawn(async move {
             let mut pts = 0u64;
+            let mut n = 0u64;
             loop {
                 tokio::time::sleep(Duration::from_millis(15)).await;
+                n += 1;
+                if stall_after.is_some_and(|s| n > s) && !c2.key.load(Ordering::SeqCst) {
+                    continue; // stuck until someone asks for a keyframe
+                }
                 let key = c2.key.swap(false, Ordering::SeqCst);
                 pts += 15_000;
                 let nal: &[u8] = if key {
@@ -137,14 +147,14 @@ fn fake_stream() -> anyhow::Result<EncodedStream> {
     }
 }
 
-/// Opening capture takes this long (a slow portal / first worker start).
-struct FakeCapture(Duration);
+/// Opening capture takes this long (a slow portal / first worker start); optional stall.
+struct FakeCapture(Duration, Option<u64>);
 impl CaptureProvider for FakeCapture {
     fn open(&self) -> BoxFuture<anyhow::Result<Box<dyn CaptureSession>>> {
-        let d = self.0;
+        let (d, stall_after) = (self.0, self.1);
         Box::pin(async move {
             tokio::time::sleep(d).await;
-            Ok(Box::new(FakeCaptureSession) as Box<dyn CaptureSession>)
+            Ok(Box::new(FakeCaptureSession { stall_after }) as Box<dyn CaptureSession>)
         })
     }
     fn setup_interactive(&self) -> BoxFuture<anyhow::Result<String>> {
@@ -167,6 +177,10 @@ impl Pc {
     }
 
     async fn start_with(capture_open: Duration) -> Self {
+        Self::start_full(capture_open, None).await
+    }
+
+    async fn start_full(capture_open: Duration, stall_after: Option<u64>) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::under(dir.path());
         paths.ensure().unwrap();
@@ -180,7 +194,7 @@ impl Pc {
             cfg,
             DeviceStore::default(),
             TrackedInput::new(Box::new(input.clone())),
-            Arc::new(FakeCapture(capture_open)),
+            Arc::new(FakeCapture(capture_open, stall_after)),
             Notifier::disabled(),
         ));
         let router = spawn_router(
@@ -576,6 +590,29 @@ async fn network_change_keeps_a_healthy_session() {
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
     assert!(!s.is_closed() && !s.timed_out(), "healthy session was cut");
+}
+
+/// The picture froze for good when the encoder never produced the keyframe the PC asked for.
+/// The phone notices the missing video and keeps asking, so video comes back by itself.
+#[tokio::test(flavor = "multi_thread")]
+async fn stuck_video_recovers() {
+    let pc = Pc::start_full(Duration::ZERO, Some(20)).await;
+    let ph = phone().await;
+    ph.pair(&pc.pairing_link(), "p").await.unwrap();
+    let s = connect(&ph, &pc.as_paired()).await.unwrap();
+    let mut last_seq = 0;
+    // the first ~20 frames, then silence
+    while let Ok(Some(v)) = timeout(Duration::from_millis(600), s.next_video()).await {
+        last_seq = v.header.seq;
+    }
+    assert!(last_seq > 0, "video never started");
+    // frames resume, starting with a keyframe
+    let v = timeout(Duration::from_secs(4), s.next_video())
+        .await
+        .expect("video stayed frozen")
+        .unwrap();
+    assert!(v.header.seq > last_seq);
+    assert!(v.header.is_keyframe());
 }
 
 /// A frame split across packets with a pause in the middle must not be lost: the session
