@@ -135,7 +135,7 @@ systemctl --user start dishus
       nothing from the session handler or the parser.
 - [ ] **Renew:** `dishus renew <phone> --days 7` → the app connects again on its next retry
       (≤ 15 s). `dishus list` shows `7d`.
-- [ ] **Renew from the phone:** in quick settings → *Renew 60 days* → notice "Pairing renewed".
+- [ ] **Renew from the phone:** in quick settings → *Renew 6 months* → notice "Pairing renewed".
       `dishus list` shows `60d`; the app's PC list shows "expires in 60 d".
 - [ ] **Expiry mid-session:** set the expiry ~1 minute ahead, restart, connect, and wait. Within
       15 s after expiry the session ends and keys are released.

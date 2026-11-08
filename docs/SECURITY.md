@@ -72,14 +72,17 @@ The QR / `dishus://pair` link carries:
 What the PC stores:
 - The ID the phone **proved during the TLS handshake**, not one claimed inside a message.
 - The phone's name, sanitized, ≤ 64 characters.
-- The expiry: 30 days by default, configurable 1–60.
+- The expiry: 180 days by default, configurable 1–180.
 - The device limit is 32.
 
 ## Expiry, renewal, revocation, panic
 
-- **Expiry.** An expired device is treated exactly like an unknown one: dropped silently at the
-  gate. A live session is also checked every 15 s and ended at expiry.
-- **Renewal** (1–60 days from *now*):
+- **Expiry.** An expired device gets no session: the gate closes its connection right after the
+  TLS handshake. Because its key is still on the list, it is told why (close code `EXPIRED`), so
+  the phone can say "re-pair at the PC" instead of retrying forever; a device that is not on the
+  list gets code 0 and no reason. Same for lockdown (`LOCKDOWN`). A live session is also checked
+  every 15 s and ended at expiry.
+- **Renewal** (1–180 days from *now*):
   - from inside an authenticated session (phone → `RenewPairing`, in-app "Renew")
   - or at the PC: `dishus renew <device> [--days N]`
   - An already-expired device can only be renewed at the PC.

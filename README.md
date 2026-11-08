@@ -256,32 +256,36 @@ pair, stream video to stdout (`… view | ffplay -f h264 -`), send keys and rene
 
 ## Status — what's verified
 
-**Verified** on Arch, Hyprland, RTX 5070 Ti, NVIDIA driver, using the desktop test client:
+Tested on Arch Linux, Hyprland 0.57, NVIDIA RTX, NVENC, with a Samsung Galaxy Z Fold7
+(Android 16), on 2026-11-08. "10/10" means the scenario was run ten times in a row.
+
+**Verified:**
 
 | | |
 |---|---|
-| ✅ | 52 automated tests: protocol and validation, pairing (wrong token, reuse, closed window), expiry and renew, allowlist rejection of unknown and expired peers, revoke kicks a live session, kill/lockdown, silent-phone timeout releases keys, invalid message ends session, vault crypto |
-| ✅ | Daemon reaches iroh relays; pairing via CLI QR link; connect in ~30 ms on LAN |
-| ✅ | NVENC H.264 1080p from the GStreamer test source over QUIC; first frame ~0.9 s; adaptive 30 → 60 fps; output decodes cleanly with ffmpeg |
-| ✅ | uinput virtual keyboard and pointer appear in Hyprland (`hyprctl devices`) |
-| ✅ | Runs under the hardened systemd unit |
-| ✅ | `cargo clippy -D warnings`, `cargo deny check` clean |
+| ✅ | 63 automated tests (protocol, pairing, expiry/renew, allowlist, revoke, kill/lockdown, idle timeout, held-key release on silence, split frames, slow capture start, stuck-video recovery, vault crypto); end-to-end suite run repeatedly with no flakes |
+| ✅ | Soak suite against isolated daemons (test source and X11 on Xvfb): every scenario ×10 — pairing, renew, revoke, kill/unlock, expiry, quick restarts (single instance, port kept), worker leaks, memory |
+| ✅ | **Real desktop on the phone through the Wayland portal** (Hyprland, xdph restore token, PipeWire, NVENC): live picture, ~40 fps at 720p, 3–4 ms on LAN |
+| ✅ | Phone ↔ PC on the phone: connect/video/back 10/10; exact key codes incl. F1–F12 10/10; tap, move, right-click, drag 10/10; renew 10/10; revoke + re-pair 10/10; held key released when the app leaves the foreground 10/10 |
+| ✅ | Network changes on the phone: Wi-Fi off/on 10/10 recovers by itself; video over **mobile data** verified |
+| ✅ | PC daemon restart mid-session: phone reconnects by itself (~3 s); `dishus kill` / `unlock` shown and recovered on the phone |
 
-**Not verified yet:**
+**Not verified:**
 
 | | |
 |---|---|
-| ⚠️ | **Android app never compiled or run.** No Android SDK/NDK on the dev machine. The Kotlin binding names were checked against bindings generated from the Rust core, nothing more. Expect compile fixes. |
-| ⚠️ | **Real screen capture through the portal** (the dialog, restore token and PipeWire path) was not exercised. Testing it pops a dialog on the desktop. Only the GStreamer test source went through the full encode/transport path. |
-| ⚠️ | Actual key and pointer *effects* on the desktop: devices are created, but no input was injected into the live session during development. |
-| ⚠️ | VA-API, x264 and openh264 encoder paths (plugins not installed here), X11 fallback, GNOME/KDE/niri portals. |
-| ⚠️ | The CI workflow itself has never run (no remote yet). `makepkg` of the PKGBUILD **was** verified from a local checkout: it builds, runs the tests, and packages. |
+| ⚠️ | GNOME and KDE portals (same code path as Hyprland, but never run on those desktops) |
+| ⚠️ | A real X11 desktop (only Xvfb) |
+| ⚠️ | VA-API, x264 and openh264 encoders (only NVENC installed here) |
+| ⚠️ | Other phones / Android versions than the one above; a signed release APK (only debug builds were tested) |
+| ⚠️ | The CI workflow (no public repository yet) |
 
 **Known gaps and limits:**
 
-- **Memory.** Daemon idle ≈ 26 MB RSS. **During a session the NVENC capture worker is ≈ 335 MB
-  RSS** (≈ 97 MB anonymous; the rest is NVIDIA driver mappings), which is over the ~150 MB goal.
-  It exits when the session ends. VA and x264 workers should be far smaller (unmeasured).
+- **Memory.** Measured by the service's cgroup (what the kernel actually charges): idle ≈ 36 MB;
+  **streaming to a phone ≈ 115 MB, peak 121 MB** (daemon + NVENC capture worker). `ps` shows the
+  worker at ≈ 300 MB RSS, but most of that is shared NVIDIA driver mappings. The worker exits when
+  the session ends. VA and x264 workers are unmeasured.
 - **No zero-copy.** PipeWire buffers are SHM, which costs one copy per frame to the encoder. A
   DMA-BUF → CUDA import is future work.
 - **Displayed RTT is app-level.** The latency number is the control-stream ping, not
