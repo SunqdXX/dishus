@@ -16,7 +16,7 @@ jobs:
   rust:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: System libraries (GStreamer headers for the daemon)
         run: |
           sudo apt-get update
@@ -36,12 +36,14 @@ jobs:
   audit:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - name: cargo-audit
         run: |
           cargo install --locked cargo-audit
-          cargo audit --deny warnings --ignore RUSTSEC-2024-0436
+          # RUSTSEC-2024-0436 (paste) and RUSTSEC-2026-0374 (basic-toml): unmaintained, no known
+          # vulnerability, build-time only (iroh's netlink proc-macro; uniffi's binding generator).
+          cargo audit --deny warnings --ignore RUSTSEC-2024-0436 --ignore RUSTSEC-2026-0374
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check advisories bans licenses sources
@@ -49,12 +51,15 @@ jobs:
   android:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
       - uses: android-actions/setup-android@v3
+        with:
+          # the default list includes the long-removed 'tools' package, which now fails
+          packages: platform-tools
       - name: NDK
         run: sdkmanager --install "ndk;27.2.12479018"
       - uses: dtolnay/rust-toolchain@stable
