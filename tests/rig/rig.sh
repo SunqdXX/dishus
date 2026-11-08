@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # DiShus test rig: isolated daemon instances that never touch the user's desktop input.
 #   rig.sh start <name> <wayland|x11|testsrc>   start an instance (input is RECORDED, not injected)
+#   rig.sh restart <name> <mode>                SIGTERM + immediate relaunch (no wait)
 #   rig.sh stop <name>                          stop it (and its Xvfb); state is kept
 #   rig.sh clean <name>                         stop and delete its state (refuses if mounts inside)
 #   rig.sh cli <name> <dishus args...>          run the CLI against it
@@ -17,11 +18,21 @@ envof() {
 }
 
 cmd=${1:?}; name=${2:?}; b=$(base "$name")
+# daemons of THIS instance (and their capture workers), found by their runtime dir;
+# in x11 mode daemon.pid is dbus-run-session, not the daemon itself
+mine() { local p; for p in $(pgrep -u "$(id -u)" -x dishus-daemon); do
+           { tr '\0' '\n' <"/proc/$p/environ"; } 2>/dev/null | grep -qx "XDG_RUNTIME_DIR=$b/rt" && echo "$p"
+         done; return 0; }
 case "$cmd" in
-  start)
+  start|restart)
+    # restart: SIGTERM the running daemon and launch the new one at once, without waiting
+    # (the new instance must cope with the old one still shutting down)
     mode=${3:?mode}
     mkdir -p "$b"/{cfg,state,rt}; chmod 700 "$b" "$b"/*
-    : > "$b/input.log"; chmod 600 "$b/input.log"
+    if [ "$cmd" = start ]; then : > "$b/input.log"; chmod 600 "$b/input.log"; fi
+    if [ "$cmd" = restart ]; then pids=$(mine); [ -n "$pids" ] && kill $pids; fi
+    # an old daemon may still hold daemon.log open: rename, never truncate
+    [ -f "$b/daemon.log" ] && mv -f "$b/daemon.log" "$b/daemon.prev.log"
     common=(env $(envof "$name") DISHUS_LOG="${DISHUS_LOG:-info,dishus_daemon=debug}" DISHUS_INPUT="record:$b/input.log")
     case "$mode" in
       wayland)
@@ -32,12 +43,14 @@ case "$cmd" in
         echo $! > "$b/daemon.pid" ;;
       x11)
         disp=${XDISP:-:99}
-        nohup Xvfb "$disp" -screen 0 1920x1080x24 -nolisten tcp >"$b/xvfb.log" 2>&1 & echo $! > "$b/xvfb.pid"
-        for _ in $(seq 50); do [ -S "/tmp/.X11-unix/X${disp#:}" ] && break; sleep 0.1; done
-        # moving content so frames actually change
-        nohup env DISPLAY="$disp" gst-launch-1.0 -q videotestsrc pattern=ball is-live=true ! \
-          video/x-raw,width=1920,height=1080,framerate=30/1 ! videoconvert ! ximagesink >"$b/content.log" 2>&1 &
-        echo $! > "$b/content.pid"
+        if [ "$cmd" = start ]; then
+          nohup Xvfb "$disp" -screen 0 1920x1080x24 -nolisten tcp >"$b/xvfb.log" 2>&1 & echo $! > "$b/xvfb.pid"
+          for _ in $(seq 50); do [ -S "/tmp/.X11-unix/X${disp#:}" ] && break; sleep 0.1; done
+          # moving content so frames actually change
+          nohup env DISPLAY="$disp" gst-launch-1.0 -q videotestsrc pattern=ball is-live=true ! \
+            video/x-raw,width=1920,height=1080,framerate=30/1 ! videoconvert ! ximagesink >"$b/content.log" 2>&1 &
+          echo $! > "$b/content.pid"
+        fi
         # private session bus: no portal reachable -> X11 fallback; no Wayland
         nohup env -u WAYLAND_DISPLAY -u HYPRLAND_INSTANCE_SIGNATURE -u XDG_CURRENT_DESKTOP \
           DISPLAY="$disp" XDG_SESSION_TYPE=x11 "${common[@]}" \
@@ -46,14 +59,24 @@ case "$cmd" in
         echo $! > "$b/daemon.pid" ;;
       *) echo "mode?"; exit 2 ;;
     esac
-    for _ in $(seq 100); do [ -S "$b/rt/dishus/control.sock" ] && break; sleep 0.1; done
-    [ -S "$b/rt/dishus/control.sock" ] || { echo "daemon failed:"; tail -20 "$b/daemon.log"; exit 1; }
-    echo "started $name ($mode)" ;;
+    # ready = the NEW instance logged its id (it can't get there while the old one lives)
+    # and its control socket answers
+    for _ in $(seq 200); do
+      grep -q "PC id" "$b/daemon.log" 2>/dev/null && env $(envof "$name") "$BIN/dishus" status >/dev/null 2>&1 && break
+      sleep 0.1
+    done
+    env $(envof "$name") "$BIN/dishus" status >/dev/null 2>&1 && grep -q "PC id" "$b/daemon.log" \
+      || { echo "daemon failed:"; tail -20 "$b/daemon.log"; exit 1; }
+    echo "${cmd}ed $name ($mode)" ;;
   stop)
+    pids=$(mine); [ -n "$pids" ] && kill $pids 2>/dev/null
+    for _ in $(seq 100); do [ -z "$(mine)" ] && break; sleep 0.1; done
+    pids=$(mine); [ -n "$pids" ] && { echo "daemon did not exit in 10 s; SIGKILL $pids"; kill -9 $pids; }
     for f in daemon content xvfb; do
       [ -f "$b/$f.pid" ] && { kill "$(cat "$b/$f.pid")" 2>/dev/null || true; rm -f "$b/$f.pid"; }
     done
-    sleep 0.5; echo "stopped $name" ;;
+    echo "stopped $name" ;;
+  pids) mine ;;
   clean)
     "$0" stop "$name" >/dev/null
     # Never delete through a mount (a FUSE portal view maps to the user's real files).

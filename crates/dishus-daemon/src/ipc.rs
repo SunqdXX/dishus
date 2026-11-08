@@ -2,7 +2,7 @@
 
 use std::{os::unix::fs::PermissionsExt, sync::Arc, time::Duration};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use iroh::Endpoint;
 use tokio::{net::UnixListener, time::timeout};
 
@@ -23,14 +23,8 @@ pub struct IpcContext {
 
 pub async fn serve(ctx: Arc<IpcContext>) -> Result<()> {
     let path = ctx.state.paths.socket();
-    // A stale socket from a crashed daemon: only remove it if nothing answers.
+    // We hold the single-instance lock (main.rs), so any socket file here is stale.
     if path.exists() {
-        if tokio::net::UnixStream::connect(&path).await.is_ok() {
-            bail!(
-                "another dishus-daemon is already running ({})",
-                path.display()
-            );
-        }
         std::fs::remove_file(&path).ok();
     }
     let listener =

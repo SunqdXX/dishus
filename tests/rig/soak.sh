@@ -81,11 +81,23 @@ done
 for i in $(seq 1 "$N"); do
   $RIG stop "$NAME" >/dev/null
   sed -i 's/^expires_at = .*/expires_at = 1000/' "$B/cfg/dishus/devices.toml"
-  $RIG start "$NAME" "$MODE" >/dev/null
+  st=$($RIG start "$NAME" "$MODE" 2>&1) || { bad expiry-start "$st"; continue; }
   r1=$($SOAK try); l=$($RIG cli "$NAME" list | tail -1)
   $RIG cli "$NAME" renew soak --days 3 >/dev/null; r2=$($SOAK try)
   [[ $r1 == "RESULT refused"* && $l == *EXPIRED* && $r2 == "RESULT connected"* ]] && ok || bad expiry "expired-try=$r1 list=$l renewed-try=$r2"
 done
+
+# 12. quick restart: SIGTERM and relaunch at once while the old daemon is still shutting
+#     down (what a careless restart does). New instance must start, keep its UDP port, and the
+#     phone must reconnect.
+port0=$(cat "$B/state/dishus/udp-port" 2>/dev/null)
+for i in $(seq 1 "$N"); do
+  st=$($RIG restart "$NAME" "$MODE" 2>&1) || { bad restart "$st"; continue; }
+  r=$($SOAK try); p=$(cat "$B/state/dishus/udp-port" 2>/dev/null)
+  [[ $r == "RESULT connected"* && -n $port0 && $p == "$port0" ]] && ok || bad restart "try=$r port=$p (was $port0) $(grep -E 'WARN|ERROR' "$B/daemon.log" | tail -2)"
+done
+n=$($RIG pids "$NAME" | wc -l)
+[[ $n -eq 1 ]] && ok || bad single-instance "$n daemons running for this rig"
 
 perms=$(stat -c '%a' "$B/cfg/dishus" "$B/cfg/dishus/secret.key" "$B/cfg/dishus/devices.toml" | tr '\n' ' ')
 [[ $perms == "700 600 600 " ]] && ok || bad perms "$perms"

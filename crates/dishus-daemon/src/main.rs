@@ -126,6 +126,9 @@ async fn main() -> Result<()> {
 
     let paths = Paths::from_env()?;
     paths.ensure()?;
+    // Before touching any state: a previous instance may still be shutting down (restart),
+    // and two daemons must never share the control socket or write devices.toml together.
+    let _instance = paths.lock_instance(std::time::Duration::from_secs(10))?;
     let cfg = Config::load(&paths)?;
     let devices = DeviceStore::load(&paths)?;
     let key = identity::load_or_create(&paths)?;
@@ -138,7 +141,7 @@ async fn main() -> Result<()> {
     tracing::info!("input: {input_desc}");
 
     let notifier = Notifier::spawn();
-    let net = NetOptions::from_config(&cfg)?;
+    let net = NetOptions::from_config(&cfg, &paths)?;
     let state = Arc::new(AppState::new(
         paths,
         cfg,

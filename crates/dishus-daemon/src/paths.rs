@@ -73,6 +73,49 @@ impl Paths {
     pub fn restore_token_file(&self) -> PathBuf {
         self.state_dir.join("portal-restore-token")
     }
+    /// The UDP port bound last time (reused so phones' stored addresses stay valid).
+    pub fn udp_port_file(&self) -> PathBuf {
+        self.state_dir.join("udp-port")
+    }
+
+    /// Held (flock) for the daemon's whole lifetime: one instance per user session.
+    pub fn instance_lock_file(&self) -> PathBuf {
+        self.runtime_dir.join("daemon.lock")
+    }
+
+    /// Take the single-instance lock, waiting up to `wait` for a previous instance that is
+    /// still shutting down. The lock is released by the kernel when the process exits, so a
+    /// crash can't leave it stuck. The returned file must be kept alive.
+    pub fn lock_instance(&self, wait: std::time::Duration) -> Result<fs::File> {
+        let path = self.instance_lock_file();
+        let f = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(&path)
+            .with_context(|| format!("opening {}", path.display()))?;
+        let end = std::time::Instant::now() + wait;
+        loop {
+            match f.try_lock() {
+                Ok(()) => return Ok(f),
+                Err(fs::TryLockError::WouldBlock) if std::time::Instant::now() < end => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(fs::TryLockError::WouldBlock) => {
+                    bail!(
+                        "another dishus-daemon is already running (lock {})",
+                        path.display()
+                    )
+                }
+                Err(fs::TryLockError::Error(e)) => {
+                    return Err(e).with_context(|| format!("locking {}", path.display()));
+                }
+            }
+        }
+    }
+
     pub fn lockdown_file(&self) -> PathBuf {
         self.state_dir.join("lockdown")
     }
@@ -146,6 +189,24 @@ pub fn read_private(path: &Path) -> Result<Option<Vec<u8>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn single_instance_lock() {
+        let t = tempfile::tempdir().unwrap();
+        let p = Paths::under(t.path());
+        p.ensure().unwrap();
+        let short = std::time::Duration::from_millis(200);
+        let held = p.lock_instance(short).unwrap();
+        let err = p.lock_instance(short).unwrap_err().to_string();
+        assert!(err.contains("already running"), "{err}");
+        // The previous instance exits while we wait: we get the lock.
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            drop(held);
+        });
+        p.lock_instance(std::time::Duration::from_secs(3)).unwrap();
+        releaser.join().unwrap();
+    }
 
     #[test]
     fn private_roundtrip_and_mode_check() {
