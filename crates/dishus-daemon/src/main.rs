@@ -24,34 +24,48 @@ fn usage() -> ! {
     std::process::exit(2);
 }
 
-fn make_input() -> (Box<dyn InputSink>, String) {
+type Status = std::sync::Arc<std::sync::Mutex<String>>;
+
+fn fixed(desc: String) -> Status {
+    std::sync::Arc::new(std::sync::Mutex::new(desc))
+}
+
+/// The input sink plus a live description for `dishus status`. `true` = it may become ready
+/// later (retrying), so the caller should keep poking `ready()`.
+fn make_input() -> (Box<dyn InputSink>, Status, bool) {
     // Test hook: `DISHUS_INPUT=record:<file>` logs input instead of injecting it.
     if let Some(path) = std::env::var("DISHUS_INPUT")
         .ok()
         .and_then(|v| v.strip_prefix("record:").map(std::path::PathBuf::from))
     {
         match dishus_daemon::backend::RecordInput::open(&path) {
-            Ok(r) => return (Box::new(r), format!("record:{}", path.display())),
+            Ok(r) => {
+                return (
+                    Box::new(r),
+                    fixed(format!("record:{}", path.display())),
+                    false,
+                );
+            }
             Err(e) => tracing::error!("DISHUS_INPUT record file {}: {e}", path.display()),
         }
     }
     #[cfg(feature = "uinput")]
     {
-        match dishus_daemon::input::UinputSink::new() {
-            Ok(u) => return (Box::new(u), "uinput".into()),
-            Err(e) => {
-                tracing::error!(
-                    "cannot open /dev/uinput ({e}); keyboard/mouse control disabled. \
-                     See README: add yourself to the `input` group or install the udev rule."
-                );
-                return (Box::new(NullInput), format!("disabled ({e})"));
-            }
-        }
+        // Retry: at boot logind may grant /dev/uinput a moment after this service starts.
+        let r = dishus_daemon::backend::RetryingInput::new(
+            "/dev/uinput",
+            Box::new(|| {
+                dishus_daemon::input::UinputSink::new().map(|u| Box::new(u) as Box<dyn InputSink>)
+            }),
+        );
+        let status = r.status.clone();
+        return (Box::new(r), status, true);
     }
     #[allow(unreachable_code)]
     (
         Box::new(NullInput),
-        "disabled (built without uinput)".into(),
+        fixed("disabled (built without uinput)".into()),
+        false,
     )
 }
 
@@ -132,13 +146,13 @@ async fn main() -> Result<()> {
     let cfg = Config::load(&paths)?;
     let devices = DeviceStore::load(&paths)?;
     let key = identity::load_or_create(&paths)?;
-    let (input, input_desc) = make_input();
+    let (input, input_status, input_retrying) = make_input();
     let worker = make_capture(&paths, &cfg);
     let capture: Arc<dyn CaptureProvider> = match &worker {
         Some(w) => Arc::new(w.clone()),
         None => Arc::new(NoCapture("capture worker unavailable".into())),
     };
-    tracing::info!("input: {input_desc}");
+    tracing::info!("input: {}", input_status.lock().expect("input status"));
 
     let notifier = Notifier::spawn();
     let net = NetOptions::from_config(&cfg, &paths)?;
@@ -154,12 +168,23 @@ async fn main() -> Result<()> {
         .await
         .context("starting iroh endpoint")?;
     tracing::info!("PC id {}", router.endpoint().id());
+    if input_retrying && !state.input.lock().expect("input lock").ready() {
+        let st = state.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                if st.input.lock().expect("input lock").ready() {
+                    break;
+                }
+            }
+        });
+    }
 
     let ctx = Arc::new(IpcContext {
         state: state.clone(),
         endpoint: router.endpoint().clone(),
         capture_backend: std::sync::RwLock::new("probing…".into()),
-        input_backend: input_desc,
+        input_backend: input_status,
     });
     if let Some(w) = worker {
         let ctx2 = ctx.clone();

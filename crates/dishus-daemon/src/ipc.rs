@@ -18,7 +18,8 @@ pub struct IpcContext {
     pub state: Arc<AppState>,
     pub endpoint: Endpoint,
     pub capture_backend: std::sync::RwLock<String>,
-    pub input_backend: String,
+    /// Live: the input sink may become available after startup (see `RetryingInput`).
+    pub input_backend: std::sync::Arc<std::sync::Mutex<String>>,
 }
 
 pub async fn serve(ctx: Arc<IpcContext>) -> Result<()> {
@@ -90,7 +91,7 @@ async fn handle(ctx: &IpcContext, req: IpcRequest) -> IpcResponse {
                 sessions,
                 devices: st.devices.read().expect("devices").list().len(),
                 capture_backend: ctx.capture_backend.read().expect("capture desc").clone(),
-                input_backend: ctx.input_backend.clone(),
+                input_backend: ctx.input_backend.lock().expect("input status").clone(),
             })
         }
         IpcRequest::List => {

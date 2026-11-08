@@ -21,6 +21,119 @@ pub trait InputSink: Send {
     fn motion(&mut self, dx: i32, dy: i32) -> std::io::Result<()>;
     /// High-resolution units: 120 per notch. Positive dy scrolls down.
     fn scroll(&mut self, dx: i32, dy: i32) -> std::io::Result<()>;
+    /// Whether events actually reach the system. A sink that is still waiting for its device
+    /// may use this call to try again.
+    fn ready(&mut self) -> bool {
+        true
+    }
+}
+
+/// Opens the real input backend, retrying until it works.
+///
+/// At boot the user service can start a few milliseconds before logind grants the new seat
+/// session its `uaccess` ACL on `/dev/uinput`; a single attempt then leaves keyboard and mouse
+/// dead for the whole boot while video works. Events that arrive while the device is missing are
+/// dropped (there is nothing to deliver them to); `ready()` and events retry at most once per
+/// [`RetryingInput::RETRY`]. `status` always describes the current state, for `dishus status`.
+pub struct RetryingInput {
+    open: Box<dyn FnMut() -> std::io::Result<Box<dyn InputSink>> + Send>,
+    name: &'static str,
+    inner: Option<Box<dyn InputSink>>,
+    last_try: Option<std::time::Instant>,
+    failures: u64,
+    pub status: Arc<std::sync::Mutex<String>>,
+}
+
+impl RetryingInput {
+    pub const RETRY: std::time::Duration = std::time::Duration::from_secs(1);
+
+    pub fn new(
+        name: &'static str,
+        open: Box<dyn FnMut() -> std::io::Result<Box<dyn InputSink>> + Send>,
+    ) -> Self {
+        let mut s = Self {
+            open,
+            name,
+            inner: None,
+            last_try: None,
+            failures: 0,
+            status: Arc::new(std::sync::Mutex::new(String::new())),
+        };
+        s.try_open(std::time::Instant::now());
+        s
+    }
+
+    fn set_status(&self, v: String) {
+        *self.status.lock().expect("input status") = v;
+    }
+
+    fn try_open(&mut self, now: std::time::Instant) -> bool {
+        if self.inner.is_some() {
+            return true;
+        }
+        if self
+            .last_try
+            .is_some_and(|t| now.duration_since(t) < Self::RETRY)
+        {
+            return false;
+        }
+        self.last_try = Some(now);
+        match (self.open)() {
+            Ok(sink) => {
+                if self.failures > 0 {
+                    tracing::info!(
+                        "input: {} is available now (after {} failed attempts); keyboard/mouse enabled",
+                        self.name,
+                        self.failures
+                    );
+                }
+                self.inner = Some(sink);
+                self.set_status(self.name.to_string());
+                true
+            }
+            Err(e) => {
+                if self.failures == 0 {
+                    tracing::warn!(
+                        "cannot open {} yet ({e}); keyboard/mouse disabled, retrying in the \
+                         background. If this persists: README, \"Let the daemon create input devices\".",
+                        self.name
+                    );
+                }
+                self.failures += 1;
+                self.set_status(format!("waiting for {} ({e}); retrying", self.name));
+                false
+            }
+        }
+    }
+
+    fn with<F: FnOnce(&mut dyn InputSink) -> std::io::Result<()>>(
+        &mut self,
+        f: F,
+    ) -> std::io::Result<()> {
+        if self.try_open(std::time::Instant::now()) {
+            f(self.inner.as_deref_mut().expect("opened"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl InputSink for RetryingInput {
+    fn key(&mut self, code: u16, down: bool) -> std::io::Result<()> {
+        self.with(|s| s.key(code, down))
+    }
+    fn button(&mut self, button: MouseButton, down: bool) -> std::io::Result<()> {
+        self.with(|s| s.button(button, down))
+    }
+    fn motion(&mut self, dx: i32, dy: i32) -> std::io::Result<()> {
+        self.with(|s| s.motion(dx, dy))
+    }
+    fn scroll(&mut self, dx: i32, dy: i32) -> std::io::Result<()> {
+        self.with(|s| s.scroll(dx, dy))
+    }
+    fn ready(&mut self) -> bool {
+        self.try_open(std::time::Instant::now())
+    }
 }
 
 /// Wraps an [`InputSink`] and remembers what is held down, so everything can be released on
@@ -88,6 +201,11 @@ impl TrackedInput {
 
     pub fn held(&self) -> (usize, usize) {
         (self.keys.len(), self.buttons.len())
+    }
+
+    /// See [`InputSink::ready`].
+    pub fn ready(&mut self) -> bool {
+        self.sink.ready()
     }
 }
 
@@ -237,6 +355,43 @@ mod tests {
         fn scroll(&mut self, _: i32, _: i32) -> std::io::Result<()> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn retrying_input_opens_late_and_drops_events_until_then() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let attempts = Arc::new(AtomicU32::new(0));
+        let rec = Rec::default();
+        let (a, r) = (attempts.clone(), rec.clone());
+        let mut input = RetryingInput::new(
+            "fake",
+            Box::new(move || {
+                // the first two attempts fail, like /dev/uinput before logind's ACL lands
+                if a.fetch_add(1, Ordering::SeqCst) < 2 {
+                    Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+                } else {
+                    Ok(Box::new(r.clone()) as Box<dyn InputSink>)
+                }
+            }),
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert!(input.status.lock().unwrap().starts_with("waiting for fake"));
+        // rate-limited: events right away don't hammer the opener, and are dropped harmlessly
+        input.key(30, true).unwrap();
+        assert!(!input.ready());
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        // after RETRY: one more failure, then success
+        input.last_try = Some(std::time::Instant::now() - RetryingInput::RETRY);
+        assert!(!input.ready());
+        input.last_try = Some(std::time::Instant::now() - RetryingInput::RETRY);
+        assert!(input.ready());
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        assert_eq!(*input.status.lock().unwrap(), "fake");
+        input.key(31, true).unwrap();
+        // once open, never reopened
+        assert!(input.ready());
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        assert_eq!(*rec.0.lock().unwrap(), vec!["k31+".to_string()]);
     }
 
     #[test]
