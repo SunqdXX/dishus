@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -17,8 +19,25 @@ android {
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     }
 
+    // Release signing: the key lives outside the repo. Point DISHUS_KEYSTORE_PROPERTIES at a file
+    // with storeFile / storePassword / keyAlias / keyPassword. Without it, release is unsigned.
+    val signing = System.getenv("DISHUS_KEYSTORE_PROPERTIES")?.let { path ->
+        Properties().apply { file(path).inputStream().use { load(it) } }
+    }
+    signingConfigs {
+        if (signing != null) create("release") {
+            storeFile = file(signing.getProperty("storeFile"))
+            storePassword = signing.getProperty("storePassword")
+            keyAlias = signing.getProperty("keyAlias")
+            keyPassword = signing.getProperty("keyPassword")
+        }
+    }
+
     buildTypes {
         release {
+            if (signing != null) signingConfig = signingConfigs.getByName("release")
+            // -Pdishus.idSuffix=.test installs a release build next to an existing install
+            (project.findProperty("dishus.idSuffix") as String?)?.let { applicationIdSuffix = it }
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
