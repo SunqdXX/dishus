@@ -19,7 +19,7 @@ peer-to-peer. No accounts, no cloud service of ours, no port forwarding.
   end-to-end-encrypted QUIC.
 - **Licence:** MIT OR Apache-2.0.
 
-> **Status: alpha (0.1).** Daily-tested on Hyprland + NVIDIA with a Galaxy Z Fold7, over Wi-Fi
+> **Status: alpha (0.1.1).** Daily-tested on Hyprland + NVIDIA with a Galaxy Z Fold7, over Wi-Fi
 > and mobile data. Other desktops, GPUs and phones should work but are less tested.
 > See [Status](#status--whats-verified) for exactly what was verified.
 
@@ -334,9 +334,13 @@ Tested on Arch Linux, Hyprland 0.57, NVIDIA RTX, NVENC, with a Samsung Galaxy Z 
 
 | | |
 |---|---|
-| ✅ | 63 automated tests (protocol, pairing, expiry/renew, allowlist, revoke, kill/lockdown, idle timeout, held-key release on silence, split frames, slow capture start, stuck-video recovery, vault crypto); end-to-end suite run repeatedly with no flakes |
+| ✅ | 69 automated tests (protocol, pairing, expiry/renew, allowlist, revoke, kill/lockdown, idle timeout, held-key release on silence, split frames, slow capture start, stuck-video recovery, vault crypto, frame-rate cap on a live pipeline); end-to-end suite run repeatedly with no flakes |
 | ✅ | Soak suite against isolated daemons (test source and X11 on Xvfb): every scenario ×10 — pairing, renew, revoke, kill/unlock, expiry, quick restarts (single instance, port kept), worker leaks, memory |
-| ✅ | **Real desktop on the phone through the Wayland portal** (Hyprland, xdph restore token, PipeWire, NVENC): live picture, ~40 fps at 720p, 3–4 ms on LAN |
+| ✅ | **Real desktop on the phone through the Wayland portal** (Hyprland, xdph restore token, PipeWire, NVENC, 180 Hz monitor): 30 fps cap held 10/10 with 1 keyframe and no gaps; on LAN the phone runs at 60 fps with every received frame rendered, 3–4 ms |
+| ✅ | Hyprland, no dialog at the PC: rejected token answered by `dishus-share-picker` 10/10; valid token reused without calling the picker 10/10; phone disconnect/reconnect 10/10 |
+| ✅ | KDE Plasma (Wayland portal): video, restore token reused 10/10 without a dialog |
+| ✅ | The signed release APK and tarball, installed from GitHub Releases on a clean PC and phone |
+| ✅ | CI: build, tests, clippy, fmt, cargo-deny / audit, Android build |
 | ✅ | Phone ↔ PC on the phone: connect/video/back 10/10; exact key codes incl. F1–F12 10/10; tap, move, right-click, drag 10/10; renew 10/10; revoke + re-pair 10/10; held key released when the app leaves the foreground 10/10 |
 | ✅ | Network changes on the phone: Wi-Fi off/on 10/10 recovers by itself; video over **mobile data** verified |
 | ✅ | PC daemon restart mid-session: phone reconnects by itself (~3 s); `dishus kill` / `unlock` shown and recovered on the phone |
@@ -345,11 +349,10 @@ Tested on Arch Linux, Hyprland 0.57, NVIDIA RTX, NVENC, with a Samsung Galaxy Z 
 
 | | |
 |---|---|
-| ⚠️ | GNOME and KDE portals (same code path as Hyprland, but never run on those desktops) |
+| ⚠️ | GNOME portal (same code path as Hyprland and KDE, but never run there); phone input on KDE |
 | ⚠️ | A real X11 desktop (only Xvfb) |
 | ⚠️ | VA-API, x264 and openh264 encoders (only NVENC installed here) |
-| ⚠️ | Other phones / Android versions than the one above; a signed release APK (only debug builds were tested) |
-| ⚠️ | The CI workflow (no public repository yet) |
+| ⚠️ | Other phones / Android versions than the one above |
 
 **Known gaps and limits:**
 

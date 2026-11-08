@@ -772,7 +772,7 @@ dependencies = [
 
 [[package]]
 name = "dishus-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -784,7 +784,7 @@ dependencies = [
 
 [[package]]
 name = "dishus-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "argon2",
@@ -806,7 +806,7 @@ dependencies = [
 
 [[package]]
 name = "dishus-daemon"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "ashpd",
@@ -836,7 +836,7 @@ dependencies = [
 
 [[package]]
 name = "dishus-proto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "data-encoding",
  "postcard",
