@@ -19,11 +19,61 @@ use tokio::{sync::mpsc, task::JoinHandle, time::timeout};
 
 use dishus_proto::{
     ALPN_PAIR, ALPN_SESSION, ClientMsg, FrameError, HEARTBEAT_INTERVAL_MS, MAX_CONTROL_FRAME,
-    MAX_VIDEO_FRAME, PROTO_VERSION, PairRequest, PairResponse, PairingInfo, ServerMsg,
-    StreamParams, VideoHeader, frame::Validate, read_frame, write_frame,
+    MAX_VIDEO_FRAME, PROTO_VERSION, PairRequest, PairResponse, PairingInfo,
+    SESSION_IDLE_TIMEOUT_MS, ServerMsg, StreamParams, VideoHeader, frame::Validate, read_frame,
+    write_frame,
 };
 
 use crate::vault::PairedPc;
+
+/// The PC refused this (paired) phone and said why. See [`dishus_proto::close_code`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refusal {
+    /// `dishus kill` is in effect on the PC.
+    Lockdown,
+    /// The pairing expired.
+    Expired,
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Refusal::Lockdown => {
+                "the PC is locked down (dishus kill); run `dishus unlock` on the PC"
+            }
+            Refusal::Expired => {
+                "the pairing has expired; run `dishus renew` on the PC or pair again"
+            }
+        })
+    }
+}
+impl std::error::Error for Refusal {}
+
+impl Refusal {
+    fn from_conn_error(e: &iroh::endpoint::ConnectionError) -> Option<Self> {
+        match e {
+            iroh::endpoint::ConnectionError::ApplicationClosed(c) => {
+                match u32::try_from(c.error_code.into_inner()).ok()? {
+                    dishus_proto::close_code::LOCKDOWN => Some(Refusal::Lockdown),
+                    dishus_proto::close_code::EXPIRED => Some(Refusal::Expired),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Look through an error chain (connect error, stream error, ...) for a refusal code.
+    pub fn find(e: &anyhow::Error) -> Option<Self> {
+        e.chain().find_map(|c| {
+            if let Some(r) = c.downcast_ref::<Refusal>() {
+                return Some(*r);
+            }
+            c.downcast_ref::<iroh::endpoint::ConnectionError>()
+                .and_then(Self::from_conn_error)
+        })
+    }
+}
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -137,6 +187,12 @@ impl Client {
         }
     }
 
+    /// Tell iroh the network may have changed (Android: iroh can't see it from native code).
+    /// Re-probes paths at once so live connections migrate instead of stalling.
+    pub async fn network_change(&self) {
+        self.endpoint.network_change().await;
+    }
+
     pub async fn connect(
         &self,
         pc: &PairedPc,
@@ -144,11 +200,32 @@ impl Client {
         params: StreamParams,
     ) -> Result<Session> {
         let addr = pc_addr(&pc.endpoint_id, &pc.relays, &pc.addrs)?;
-        let conn = timeout(CONNECT_TIMEOUT, self.endpoint.connect(addr, ALPN_SESSION))
-            .await
-            .context("timed out reaching the PC")?
-            .context("could not connect (offline, revoked or expired)")?;
-        Session::start(conn, device_name, params).await
+        let res = async {
+            let conn = timeout(CONNECT_TIMEOUT, self.endpoint.connect(addr, ALPN_SESSION))
+                .await
+                .context("timed out reaching the PC")?
+                .context("could not connect (offline, revoked or expired)")?;
+            // The PC may refuse right after the handshake: depending on timing that surfaces
+            // here or as an error while opening the control stream.
+            let closed = conn.clone();
+            Session::start(conn, device_name, params)
+                .await
+                .map_err(|e| {
+                    match closed
+                        .close_reason()
+                        .as_ref()
+                        .and_then(Refusal::from_conn_error)
+                    {
+                        Some(r) => anyhow::Error::new(r),
+                        None => e,
+                    }
+                })
+        }
+        .await;
+        res.map_err(|e| match Refusal::find(&e) {
+            Some(r) => anyhow::Error::new(r),
+            None => e,
+        })
     }
 }
 
@@ -166,8 +243,15 @@ pub struct Session {
     video_rx: tokio::sync::Mutex<mpsc::Receiver<VideoPacket>>,
     rtt_ms: Arc<AtomicU64>,
     closed: Arc<AtomicBool>,
+    /// Set when the watchdog gave up on a silent PC.
+    timed_out: Arc<AtomicBool>,
     tasks: Vec<JoinHandle<()>>,
 }
+
+/// The PC answers every heartbeat; this long without any message from it means the session is
+/// gone (the PC itself gives up on a silent phone after `SESSION_IDLE_TIMEOUT_MS`). Without this
+/// the phone only noticed after QUIC's ~30 s idle timeout, e.g. after switching Wi-Fi off.
+const PC_SILENT_MS: u64 = SESSION_IDLE_TIMEOUT_MS + 1000;
 
 impl Drop for Session {
     fn drop(&mut self) {
@@ -198,6 +282,8 @@ impl Session {
         let (vid_tx, vid_rx) = mpsc::channel::<VideoPacket>(8);
         let rtt_ms = Arc::new(AtomicU64::new(0));
         let closed = Arc::new(AtomicBool::new(false));
+        let timed_out = Arc::new(AtomicBool::new(false));
+        let last_rx = Arc::new(AtomicU64::new(0));
         let start = Instant::now();
 
         // Writer + heartbeat.
@@ -227,9 +313,12 @@ impl Session {
         // Control reader.
         let r_rtt = rtt_ms.clone();
         let r_closed = closed.clone();
+        let r_last = last_rx.clone();
         let reader = tokio::spawn(async move {
             loop {
-                match read_frame::<_, ServerMsg>(&mut recv, MAX_CONTROL_FRAME).await {
+                let frame = read_frame::<_, ServerMsg>(&mut recv, MAX_CONTROL_FRAME).await;
+                r_last.store(mono_ms(start), Ordering::Relaxed);
+                match frame {
                     Ok(ServerMsg::Pong { t }) => {
                         r_rtt.store(mono_ms(start).saturating_sub(t), Ordering::Relaxed);
                     }
@@ -247,6 +336,24 @@ impl Session {
                 }
             }
             r_closed.store(true, Ordering::SeqCst);
+        });
+
+        // Watchdog: close a session whose PC went silent, so the app reconnects promptly.
+        let wd_conn = conn.clone();
+        let wd_closed = closed.clone();
+        let wd_timed_out = timed_out.clone();
+        let watchdog = tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_millis(250));
+            loop {
+                tick.tick().await;
+                if mono_ms(start).saturating_sub(last_rx.load(Ordering::Relaxed)) > PC_SILENT_MS {
+                    tracing::warn!("PC silent for {PC_SILENT_MS} ms; closing the session");
+                    wd_timed_out.store(true, Ordering::SeqCst);
+                    wd_closed.store(true, Ordering::SeqCst);
+                    wd_conn.close(0u32.into(), b"pc silent");
+                    break;
+                }
+            }
         });
 
         // Video receiver: streams are accepted in stream-id order, which is frame order.
@@ -311,7 +418,8 @@ impl Session {
             video_rx: tokio::sync::Mutex::new(vid_rx),
             rtt_ms,
             closed,
-            tasks: vec![writer, reader, video],
+            timed_out,
+            tasks: vec![writer, reader, video, watchdog],
         })
     }
 
@@ -347,6 +455,19 @@ impl Session {
 
     pub fn is_closed(&self) -> bool {
         self.closed.load(Ordering::SeqCst) || self.conn.close_reason().is_some()
+    }
+
+    /// True if the session was closed because the PC stopped answering.
+    pub fn timed_out(&self) -> bool {
+        self.timed_out.load(Ordering::SeqCst)
+    }
+
+    /// Set if the PC closed this connection with a refusal (e.g. lockdown right after connect).
+    pub fn refusal(&self) -> Option<Refusal> {
+        self.conn
+            .close_reason()
+            .as_ref()
+            .and_then(Refusal::from_conn_error)
     }
 
     /// "direct" or "relay" plus QUIC path RTT.

@@ -246,6 +246,20 @@ async fn connect(c: &Client, pc: &PairedPc) -> anyhow::Result<Session> {
     }
 }
 
+/// Connect expecting a refusal; returns what the PC said (None = refused without a reason).
+async fn refusal(c: &Client, pc: &PairedPc) -> Option<dishus_core::Refusal> {
+    match c.connect(pc, "phone", StreamParams::default()).await {
+        Err(e) => dishus_core::Refusal::find(&e),
+        Ok(s) => {
+            // Refused right after the handshake: the session sees the close on first read.
+            match timeout(Duration::from_secs(5), s.next_control()).await {
+                Ok(None) => s.refusal(),
+                other => panic!("expected a refusal, got {other:?}"),
+            }
+        }
+    }
+}
+
 async fn wait_for<F: Fn() -> bool>(f: F) {
     timeout(Duration::from_secs(5), async {
         while !f() {
@@ -358,7 +372,10 @@ async fn expired_device_is_dropped_and_cli_renew_restores() {
         let mut d = pc.state.devices.write().unwrap();
         d.renew(&ph.endpoint_id(), 1, 0).unwrap();
     }
-    assert!(connect(&ph, &pc.as_paired()).await.is_err(), "expired");
+    assert_eq!(
+        refusal(&ph, &pc.as_paired()).await,
+        Some(dishus_core::Refusal::Expired)
+    );
     pc.state.renew(&ph.endpoint_id(), 30).unwrap();
     connect(&ph, &pc.as_paired()).await.expect("renewed");
 }
@@ -378,7 +395,8 @@ async fn revoke_kicks_live_session_and_blocks_reconnect() {
     pc.state.revoke("victim").unwrap();
     assert_eq!(expect_bye(&s).await, ByeReason::Revoked);
     wait_for(|| pc.input.log().contains(&"key 29 up".to_string())).await;
-    assert!(connect(&ph, &pc.as_paired()).await.is_err());
+    // A revoked device is unknown again: refused without being told anything.
+    assert_eq!(refusal(&ph, &pc.as_paired()).await, None);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -415,7 +433,10 @@ async fn kill_cuts_and_locks_until_unlock() {
     let s = connect(&ph, &pc.as_paired()).await.unwrap();
     assert_eq!(pc.state.kill().unwrap(), 1);
     assert_eq!(expect_bye(&s).await, ByeReason::Killed);
-    assert!(connect(&ph, &pc.as_paired()).await.is_err(), "locked down");
+    assert_eq!(
+        refusal(&ph, &pc.as_paired()).await,
+        Some(dishus_core::Refusal::Lockdown)
+    );
     assert!(pc.state.open_pairing().is_err(), "no pairing in lockdown");
     assert!(pc.state.paths.lockdown_file().exists(), "persisted");
     pc.state.unlock().unwrap();

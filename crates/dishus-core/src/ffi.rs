@@ -44,7 +44,20 @@ impl From<vault::VaultError> for DishusError {
     }
 }
 
+/// `ControlEvent::Closed` reason / `Rejected` message for a refusal; the app matches on these.
+fn refusal_reason(r: crate::Refusal) -> &'static str {
+    match r {
+        crate::Refusal::Lockdown => "Lockdown",
+        crate::Refusal::Expired => "Expired",
+    }
+}
+
 fn net_err(e: anyhow::Error) -> DishusError {
+    if let Some(r) = crate::Refusal::find(&e) {
+        return DishusError::Rejected {
+            msg: refusal_reason(r).into(),
+        };
+    }
     DishusError::Network {
         msg: format!("{e:#}"),
     }
@@ -285,6 +298,14 @@ impl Core {
         })
     }
 
+    /// Call on every Android connectivity change (default network available / lost / changed).
+    /// No-op while locked or before the first connection.
+    pub fn network_changed(&self) {
+        if let Some(c) = self.client.lock().expect("client lock").clone() {
+            self.rt.spawn(async move { c.network_change().await });
+        }
+    }
+
     pub fn set_relays(&self, settings: RelaySettings) -> Result<(), DishusError> {
         for r in &settings.relays {
             r.parse::<iroh::RelayUrl>()
@@ -460,7 +481,12 @@ impl RemoteSession {
             .flatten();
         Some(match msg {
             None => ControlEvent::Closed {
-                reason: "connection closed".into(),
+                reason: match self.session.refusal() {
+                    Some(r) => refusal_reason(r),
+                    None if self.session.timed_out() => "PC not responding",
+                    None => "connection closed",
+                }
+                .into(),
             },
             Some(ServerMsg::Welcome {
                 pc_name,

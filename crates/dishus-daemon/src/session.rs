@@ -69,7 +69,7 @@ fn path_summary(conn: &Connection) -> String {
 pub async fn handle(state: Arc<AppState>, conn: Connection) -> Result<()> {
     let peer = conn.remote_id();
     if !state.is_session_allowed(&peer) {
-        conn.close(0u32.into(), b"");
+        conn.close(state.refusal_code(&peer).into(), b"");
         bail!("peer no longer allowed");
     }
     let device = state.device(&peer).context("device vanished")?;

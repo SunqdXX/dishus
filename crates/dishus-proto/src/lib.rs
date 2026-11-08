@@ -29,6 +29,17 @@ pub const ALPN_PAIR: &[u8] = b"dishus/pair/1";
 /// Protocol version carried in `Hello` / `Welcome`.
 pub const PROTO_VERSION: u16 = 1;
 
+/// QUIC application close codes. The PC tells a *paired* device why it refuses it (it has proven
+/// its identity in the TLS handshake); anything else gets [`close_code::REFUSED`] and no reason.
+pub mod close_code {
+    pub const REFUSED: u32 = 0;
+    pub const PROTOCOL_ERROR: u32 = 1;
+    /// `dishus kill` is in effect until `dishus unlock`.
+    pub const LOCKDOWN: u32 = 2;
+    /// The pairing expired; `dishus renew` on the PC or pair again.
+    pub const EXPIRED: u32 = 3;
+}
+
 /// Hard cap on a single control-stream frame (bytes, excluding the 4-byte length prefix).
 pub const MAX_CONTROL_FRAME: usize = 64 * 1024;
 /// Hard cap on a single encoded video frame including its header.

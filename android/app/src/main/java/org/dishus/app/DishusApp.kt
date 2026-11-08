@@ -1,6 +1,9 @@
 package org.dishus.app
 
 import android.app.Application
+import android.net.ConnectivityManager
+import android.net.LinkProperties
+import android.net.Network
 import android.os.Handler
 import android.os.Looper
 import androidx.lifecycle.DefaultLifecycleObserver
@@ -43,6 +46,7 @@ class DishusApp : Application() {
         prefs = Prefs(this)
         screenshotsAllowed.value = prefs.allowScreenshots
         runCatching { core.setRelays(RelaySettings(prefs.relays, prefs.disableRelays)) }
+        watchNetwork()
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStop(owner: LifecycleOwner) {
                 backgrounded.value = true
@@ -54,6 +58,25 @@ class DishusApp : Application() {
                 backgrounded.value = false
                 handler.removeCallbacks(lockRunnable)
             }
+        })
+    }
+
+    /**
+     * iroh can't see Android network changes from native code; without this a Wi-Fi <-> mobile
+     * switch stalled the session until timeouts fired (15-40 s on a Galaxy Z Fold7).
+     */
+    private fun watchNetwork() {
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return
+        val notify = Runnable { runCatching { core.networkChanged() } }
+        cm.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
+            // Callbacks arrive in bursts; coalesce them.
+            private fun changed() {
+                handler.removeCallbacks(notify)
+                handler.postDelayed(notify, 200)
+            }
+            override fun onAvailable(network: Network) = changed()
+            override fun onLost(network: Network) = changed()
+            override fun onLinkPropertiesChanged(network: Network, lp: LinkProperties) = changed()
         })
     }
 

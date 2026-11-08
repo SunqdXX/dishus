@@ -129,7 +129,10 @@ async fn main() -> Result<()> {
         }
     };
     if wait_welcome(&s).await.is_err() {
-        println!("RESULT refused (no welcome)");
+        match s.refusal() {
+            Some(r) => println!("RESULT refused ({r})"),
+            None => println!("RESULT refused (no welcome)"),
+        }
         if cmd == "try" {
             return Ok(());
         }

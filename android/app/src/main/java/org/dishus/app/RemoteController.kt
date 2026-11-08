@@ -21,6 +21,7 @@ import kotlinx.coroutines.withContext
 import org.dishus.app.input.Evdev
 import org.dishus.app.video.H264Decoder
 import uniffi.dishus_core.ControlEvent
+import uniffi.dishus_core.DishusException
 import uniffi.dishus_core.Monitor
 import uniffi.dishus_core.RemoteSession
 import uniffi.dishus_core.StreamSettings
@@ -28,6 +29,9 @@ import java.util.concurrent.Executors
 import kotlinx.coroutines.asCoroutineDispatcher
 
 enum class ModState { OFF, STICKY, LOCKED }
+
+private const val EXPIRED_MSG = "The pairing with this PC has expired. Run `dishus renew` on the PC, or pair again."
+private const val LOCKDOWN_MSG = "The PC is locked down (dishus kill). Waiting for `dishus unlock` on the PC…"
 
 data class RemoteUi(
     val status: String = "Connecting…",
@@ -109,16 +113,20 @@ class RemoteController(private val app: DishusApp, private val pcId: String) {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                val refusal = (e as? DishusException.Rejected)?.msg
                 val pc = runCatching { app.core.pairedPcs().firstOrNull { it.id == pcId } }.getOrNull()
-                if (pc != null && pc.expiresAt.toLong() <= System.currentTimeMillis() / 1000) {
-                    // The PC silently drops expired peers, so retrying can never succeed.
-                    _ui.value = _ui.value.copy(
-                        fatal = true,
-                        status = "The pairing with this PC has expired. Run `dishus renew` on the PC, or pair again.",
-                    )
+                if (refusal == "Expired" || (pc != null && pc.expiresAt.toLong() <= System.currentTimeMillis() / 1000)) {
+                    // Retrying can never succeed.
+                    _ui.value = _ui.value.copy(fatal = true, status = EXPIRED_MSG)
                     return
                 }
-                _ui.value = _ui.value.copy(status = "Can't reach PC: ${e.message?.take(120)}")
+                if (refusal == "Lockdown") {
+                    // Keep trying slowly: `dishus unlock` at the PC is a deliberate act.
+                    _ui.value = _ui.value.copy(status = LOCKDOWN_MSG)
+                    backoff = backoff.coerceAtLeast(5_000)
+                } else {
+                    _ui.value = _ui.value.copy(status = "Can't reach PC: ${e.message?.take(120)}")
+                }
                 delay(backoff)
                 backoff = (backoff * 2).coerceAtMost(15_000)
                 continue
@@ -149,7 +157,7 @@ class RemoteController(private val app: DishusApp, private val pcId: String) {
                 }
                 mods.clear(); publishMods()
             }
-            val fatal = reason in setOf("Revoked", "Killed")
+            val fatal = reason in setOf("Revoked", "Killed", "Expired")
             _ui.value = _ui.value.copy(
                 connected = false,
                 fatal = fatal,
@@ -157,10 +165,13 @@ class RemoteController(private val app: DishusApp, private val pcId: String) {
                     "Revoked" -> "This phone's pairing was revoked or expired on the PC."
                     "Killed" -> "The PC cut all sessions (dishus kill)."
                     "Replaced" -> "Another session took over."
+                    "Expired" -> EXPIRED_MSG
+                    "Lockdown" -> LOCKDOWN_MSG
                     else -> "Disconnected ($reason). Reconnecting…"
                 },
             )
             if (fatal || reason == "Replaced") return
+            if (reason == "Lockdown") backoff = backoff.coerceAtLeast(5_000)
             delay(backoff)
         }
     }

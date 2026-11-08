@@ -8,7 +8,9 @@
 //!    retry token". QUIC's 3x anti-amplification limit still applies before validation.)
 //! 2. **`after_handshake` hook**: the TLS handshake has proven the peer's EndpointId. Session
 //!    connections must be on the allowlist and unexpired; pairing connections require the
-//!    pairing window to be open. Anything else is closed with code 0 and no reason.
+//!    pairing window to be open. A refused device that is paired (but expired, or the PC is in
+//!    lockdown) is told why via the close code, so the phone can say so instead of retrying
+//!    forever; anything else is closed with code 0 and no reason.
 
 use std::{fmt, sync::Arc, time::Instant};
 
@@ -52,8 +54,13 @@ impl EndpointHooks for Gate {
                 peer.fmt_short(),
                 String::from_utf8_lossy(conn.alpn())
             );
+            let code = if conn.alpn() == ALPN_SESSION {
+                self.0.refusal_code(&peer)
+            } else {
+                dishus_proto::close_code::REFUSED
+            };
             AfterHandshakeOutcome::Reject {
-                error_code: 0u32.into(),
+                error_code: code.into(),
                 reason: Vec::new(),
             }
         }
@@ -64,7 +71,8 @@ impl EndpointHooks for Gate {
 pub fn incoming_filter(state: Arc<AppState>) -> iroh::protocol::IncomingFilter {
     Arc::new(move |incoming: &Incoming| match incoming.remote_addr() {
         IncomingAddr::Relay { endpoint_id, .. } => {
-            if state.is_session_allowed(&endpoint_id) || state.is_pairing_open() {
+            // Known devices get through even when refused, so the hook can tell them why.
+            if state.device(&endpoint_id).is_some() || state.is_pairing_open() {
                 IncomingFilterOutcome::Accept
             } else {
                 IncomingFilterOutcome::Ignore

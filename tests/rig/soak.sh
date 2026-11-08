@@ -68,12 +68,12 @@ for i in $(seq 1 "$N"); do
   $RIG cli "$NAME" kill >/dev/null; wait $W; w=$(cat "$B/wait.out")
   r1=$($SOAK try); p=$($RIG cli "$NAME" pair --skip-capture-setup 2>&1 | head -2 | tr '\n' ' ')
   $RIG cli "$NAME" unlock >/dev/null; r2=$($SOAK try)
-  [[ $w == *"bye=Killed"* && $r1 == "RESULT refused"* && $p == *lockdown* && $r2 == "RESULT connected"* ]] && ok || bad kill "old=$w after=$r1 pair=$p unlocked=$r2"
+  [[ $w == *"bye=Killed"* && $r1 == "RESULT refused"*"locked down"* && $p == *lockdown* && $r2 == "RESULT connected"* ]] && ok || bad kill "old=$w after=$r1 pair=$p unlocked=$r2"
   # 10. revoke: cuts session immediately, reconnect refused, re-pair restores
   $SOAK wait 15 > "$B/wait.out" & W=$!; sleep 1.5
   $RIG cli "$NAME" revoke soak >/dev/null; wait $W; w=$(cat "$B/wait.out")
   r1=$($SOAK try)
-  [[ $w == *"bye=Revoked"* && $r1 == "RESULT refused"* ]] && ok || bad revoke "old=$w after=$r1"
+  [[ $w == *"bye=Revoked"* && $r1 == "RESULT refused"* && $r1 != *"locked down"* && $r1 != *expired* ]] && ok || bad revoke "old=$w after=$r1"
   pair && r2=$($SOAK try) && [[ $r2 == "RESULT connected"* ]] && ok || bad repair "${r2:-pair failed}"
 done
 
@@ -84,7 +84,7 @@ for i in $(seq 1 "$N"); do
   st=$($RIG start "$NAME" "$MODE" 2>&1) || { bad expiry-start "$st"; continue; }
   r1=$($SOAK try); l=$($RIG cli "$NAME" list | tail -1)
   $RIG cli "$NAME" renew soak --days 3 >/dev/null; r2=$($SOAK try)
-  [[ $r1 == "RESULT refused"* && $l == *EXPIRED* && $r2 == "RESULT connected"* ]] && ok || bad expiry "expired-try=$r1 list=$l renewed-try=$r2"
+  [[ $r1 == "RESULT refused"*"expired"* && $l == *EXPIRED* && $r2 == "RESULT connected"* ]] && ok || bad expiry "expired-try=$r1 list=$l renewed-try=$r2"
 done
 
 # 12. quick restart: SIGTERM and relaunch at once while the old daemon is still shutting
@@ -96,12 +96,17 @@ for i in $(seq 1 "$N"); do
   r=$($SOAK try); p=$(cat "$B/state/dishus/udp-port" 2>/dev/null)
   [[ $r == "RESULT connected"* && -n $port0 && $p == "$port0" ]] && ok || bad restart "try=$r port=$p (was $port0) $(grep -E 'WARN|ERROR' "$B/daemon.log" | tail -2)"
 done
-n=$($RIG pids "$NAME" | wc -l)
+n=0; for p in $($RIG pids "$NAME"); do tr '\0' ' ' <"/proc/$p/cmdline" 2>/dev/null | grep -q -- '--capture-worker' || n=$((n+1)); done
 [[ $n -eq 1 ]] && ok || bad single-instance "$n daemons running for this rig"
 
 perms=$(stat -c '%a' "$B/cfg/dishus" "$B/cfg/dishus/secret.key" "$B/cfg/dishus/devices.toml" | tr '\n' ' ')
 [[ $perms == "700 600 600 " ]] && ok || bad perms "$perms"
-rss=$(ps -o rss= -p "$($RIG pids "$NAME" | head -1)" 2>/dev/null); workers=$(pgrep -fc -- "--capture-worker" || true)
+# only this rig's processes (other rigs or the real daemon may legitimately run workers)
+main=""; workers=0
+for p in $($RIG pids "$NAME"); do
+  if tr '\0' ' ' <"/proc/$p/cmdline" 2>/dev/null | grep -q -- '--capture-worker'; then workers=$((workers+1)); else main=$p; fi
+done
+rss=$(ps -o rss= -p "$main" 2>/dev/null)
 echo "daemon RSS after soak: $((rss/1024)) MB; capture workers still running: $workers"
 [[ $workers -eq 0 ]] && ok || bad worker-leak "$workers workers left"
 $RIG stop "$NAME" >/dev/null

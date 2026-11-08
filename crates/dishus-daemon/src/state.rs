@@ -103,6 +103,22 @@ impl AppState {
                 .is_allowed(id, now_unix())
     }
 
+    pub fn is_locked_down(&self) -> bool {
+        self.lockdown.load(Ordering::SeqCst)
+    }
+
+    /// Close code for a session connection that is not allowed: a known device learns why
+    /// (lockdown / expired), an unknown or revoked one learns nothing.
+    pub fn refusal_code(&self, id: &EndpointId) -> u32 {
+        use dishus_proto::close_code;
+        match self.device(id) {
+            None => close_code::REFUSED,
+            Some(_) if self.is_locked_down() => close_code::LOCKDOWN,
+            Some(d) if d.expires_at <= now_unix() => close_code::EXPIRED,
+            Some(_) => close_code::REFUSED,
+        }
+    }
+
     pub fn is_pairing_open(&self) -> bool {
         !self.lockdown.load(Ordering::SeqCst)
             && self
