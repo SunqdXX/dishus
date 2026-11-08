@@ -59,12 +59,11 @@ class H264Decoder(private val surface: Surface) {
             buf.put(data)
             c.queueInputBuffer(idx, 0, data.size, ptsUs, if (keyframe) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
             return true
-        } catch (e: MediaCodec.CodecException) {
-            android.util.Log.w("DishusVideo", "decoder input failed: $e")
-            release()
-            return false
-        } catch (e: IllegalStateException) {
-            android.util.Log.w("DishusVideo", "decoder input failed: $e")
+        } catch (e: Exception) {
+            // Anything (CodecException, IOException from creating the codec, a bad argument):
+            // start over from the next keyframe. Never let it escape: that killed the video loop
+            // while input kept working ("picture frozen").
+            android.util.Log.w("DishusVideo", "decoder failed, resetting", e)
             release()
             return false
         }

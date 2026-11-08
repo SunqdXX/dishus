@@ -137,8 +137,8 @@ class RemoteController(private val app: DishusApp, private val pcId: String) {
             try {
                 session = s
                 coroutineScope {
-                    val video = launch(decodeDispatcher) { quietly { videoLoop(s) } }
-                    val stats = launch { quietly { statsLoop(s) } }
+                    val video = launch(decodeDispatcher) { quietly("video") { videoLoop(s) } }
+                    val stats = launch { quietly("stats") { statsLoop(s) } }
                     reason = try {
                         controlLoop(s)
                     } catch (e: CancellationException) {
@@ -206,8 +206,10 @@ class RemoteController(private val app: DishusApp, private val pcId: String) {
     }
 
     /** FFI calls on a closed session throw; a dying child must not crash the app. */
-    private inline fun quietly(block: () -> Unit) {
-        try { block() } catch (e: CancellationException) { throw e } catch (_: Exception) {}
+    private inline fun quietly(name: String, block: () -> Unit) {
+        try { block() } catch (e: CancellationException) { throw e } catch (e: Exception) {
+            Log.e("Dishus", "$name loop died", e)
+        }
     }
 
     private suspend fun videoLoop(s: RemoteSession) {
@@ -225,7 +227,13 @@ class RemoteController(private val app: DishusApp, private val pcId: String) {
                 rx = 0; fed = 0; rejected = 0; noDecoder = 0; keys = 0; kfReq = 0; lastLog = now
             }
             val d = decoder ?: run { noDecoder++; null } ?: continue
-            val ok = d.feed(f.data, f.ptsUs.toLong(), f.keyframe)
+            val ok = try {
+                d.feed(f.data, f.ptsUs.toLong(), f.keyframe)
+            } catch (e: Exception) { // feed() catches everything; belt and braces
+                Log.e("DishusVideo", "feed threw", e)
+                runCatching { d.release() }
+                false
+            }
             if (ok) fed++ else rejected++
             if (!ok) {
                 if (now - lastKfRequest > 300) {
