@@ -101,7 +101,7 @@ n=$($RIG pids "$NAME" | wc -l)
 
 perms=$(stat -c '%a' "$B/cfg/dishus" "$B/cfg/dishus/secret.key" "$B/cfg/dishus/devices.toml" | tr '\n' ' ')
 [[ $perms == "700 600 600 " ]] && ok || bad perms "$perms"
-rss=$(ps -o rss= -p "$(cat "$B/daemon.pid")" 2>/dev/null); workers=$(pgrep -fc -- "--capture-worker" || true)
+rss=$(ps -o rss= -p "$($RIG pids "$NAME" | head -1)" 2>/dev/null); workers=$(pgrep -fc -- "--capture-worker" || true)
 echo "daemon RSS after soak: $((rss/1024)) MB; capture workers still running: $workers"
 [[ $workers -eq 0 ]] && ok || bad worker-leak "$workers workers left"
 $RIG stop "$NAME" >/dev/null
