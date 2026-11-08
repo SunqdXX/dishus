@@ -30,7 +30,7 @@ pub struct Config {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct VideoConfig {
-    /// "auto", "nvenc", "vaapi", "x264", "openh264"
+    /// "auto", "nvenc", "vaapi" (either VA-API entry point), "vaapi-lp", "x264", "openh264"
     pub encoder: String,
     /// Absolute ceiling for the adaptive bitrate controller (kbit/s).
     pub max_bitrate_kbps: u32,
@@ -97,8 +97,10 @@ impl Config {
                 bail!("relay url must be http(s): {r}");
             }
         }
-        if !["auto", "nvenc", "vaapi", "x264", "openh264"].contains(&self.video.encoder.as_str()) {
-            bail!("video.encoder must be one of auto, nvenc, vaapi, x264, openh264");
+        if !["auto", "nvenc", "vaapi", "vaapi-lp", "x264", "openh264"]
+            .contains(&self.video.encoder.as_str())
+        {
+            bail!("video.encoder must be one of auto, nvenc, vaapi, vaapi-lp, x264, openh264");
         }
         if !(300..=200_000).contains(&self.video.max_bitrate_kbps) {
             bail!("video.max_bitrate_kbps must be within 300..=200000");

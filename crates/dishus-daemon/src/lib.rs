@@ -6,6 +6,8 @@ pub mod backend;
 pub mod capture;
 pub mod config;
 pub mod devices;
+#[cfg(feature = "capture")]
+pub mod doctor;
 pub mod gate;
 pub mod identity;
 pub mod ipc;

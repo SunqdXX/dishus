@@ -19,6 +19,9 @@ use gstreamer_app as gst_app;
 pub enum Encoder {
     Nvenc,
     Va,
+    /// VA-API "low power" entry point: the only H.264 encoder on recent Intel iGPUs (Ice Lake
+    /// and newer drop the shader-based one on some drivers).
+    VaLowPower,
     X264,
     OpenH264,
 }
@@ -28,6 +31,7 @@ impl Encoder {
         match self {
             Encoder::Nvenc => "nvenc",
             Encoder::Va => "vaapi",
+            Encoder::VaLowPower => "vaapi-lp",
             Encoder::X264 => "x264",
             Encoder::OpenH264 => "openh264",
         }
@@ -37,15 +41,38 @@ impl Encoder {
         match self {
             Encoder::Nvenc => &["nvh264enc"],
             Encoder::Va => &["vah264enc", "vapostproc"],
+            Encoder::VaLowPower => &["vah264lpenc", "vapostproc"],
             Encoder::X264 => &["x264enc"],
             Encoder::OpenH264 => &["openh264enc"],
         }
     }
 
     fn present(self) -> bool {
+        self.missing().is_empty()
+    }
+
+    /// GStreamer elements this encoder needs that aren't installed (or that the GPU driver
+    /// doesn't offer: `vah264enc` only registers when the VA driver can encode H.264).
+    pub fn missing(self) -> Vec<&'static str> {
         self.factories()
             .iter()
-            .all(|f| gst::ElementFactory::find(f).is_some())
+            .copied()
+            .filter(|f| gst::ElementFactory::find(f).is_none())
+            .collect()
+    }
+
+    /// Every encoder, in the order `auto` tries them.
+    pub const ALL: [Encoder; 5] = [
+        Encoder::Nvenc,
+        Encoder::Va,
+        Encoder::VaLowPower,
+        Encoder::X264,
+        Encoder::OpenH264,
+    ];
+
+    /// Runs on the CPU (works on any PC, costs CPU time).
+    pub fn is_software(self) -> bool {
+        matches!(self, Encoder::X264 | Encoder::OpenH264)
     }
 }
 
@@ -56,16 +83,14 @@ pub fn init() -> Result<()> {
 
 /// Encoders to try, in order, given the config preference.
 pub fn candidates(pref: &str) -> Vec<Encoder> {
-    [
-        Encoder::Nvenc,
-        Encoder::Va,
-        Encoder::X264,
-        Encoder::OpenH264,
-    ]
-    .into_iter()
-    .filter(|e| pref == "auto" || e.name() == pref)
-    .filter(|e| e.present())
-    .collect()
+    Encoder::ALL
+        .into_iter()
+        // "vaapi" means either VA-API entry point.
+        .filter(|e| {
+            pref == "auto" || e.name() == pref || (pref == "vaapi" && *e == Encoder::VaLowPower)
+        })
+        .filter(|e| e.present())
+        .collect()
 }
 
 /// Where pixels come from.
@@ -148,17 +173,24 @@ fn encoder_desc(enc: Encoder, p: &Params) -> String {
              nvh264enc name=enc preset=p1 tune=ultra-low-latency rc-mode=cbr bitrate={kbps} \
              gop-size=-1 bframes=0 zerolatency=true rc-lookahead=0 repeat-sequence-header=true"
         ),
-        Encoder::Va => format!(
+        Encoder::Va | Encoder::VaLowPower => format!(
             "vapostproc ! video/x-raw(memory:VAMemory),format=NV12{scale} ! \
-             vah264enc name=enc rate-control=cbr bitrate={kbps} key-int-max=1024 b-frames=0 target-usage=7"
+             {} name=enc rate-control=cbr bitrate={kbps} key-int-max=1024 b-frames=0 target-usage=7",
+            if enc == Encoder::Va {
+                "vah264enc"
+            } else {
+                "vah264lpenc"
+            }
         ),
+        // Software paths: scale first (fewer pixels to convert), and use every core for both;
+        // the GStreamer default of one thread can't convert 1440p at 30 fps on slower CPUs.
         Encoder::X264 => format!(
-            "videoconvert ! videoscale ! video/x-raw,format=I420{scale} ! \
+            "videoscale n-threads=0 ! videoconvert n-threads=0 ! video/x-raw,format=I420{scale} ! \
              x264enc name=enc tune=zerolatency speed-preset=ultrafast bitrate={kbps} key-int-max=1024 \
              bframes=0 byte-stream=true sliced-threads=true"
         ),
         Encoder::OpenH264 => format!(
-            "videoconvert ! videoscale ! video/x-raw,format=I420{scale} ! \
+            "videoscale n-threads=0 ! videoconvert n-threads=0 ! video/x-raw,format=I420{scale} ! \
              openh264enc name=enc bitrate={} rate-control=bitrate complexity=low gop-size=1024",
             kbps * 1000
         ),
@@ -405,6 +437,49 @@ fn start_one(
             }
         })?;
     Ok(running)
+}
+
+/// Really encodes a moving test pattern with `enc` for about a second and returns the
+/// frames per second it delivered. Used by `dishus-daemon --doctor`: a plugin being installed
+/// proves nothing (a VA driver without H.264 encode, NVENC on nouveau), only frames do.
+pub fn probe(enc: Encoder, max_height: u16, fps: u8) -> Result<f64> {
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let c = count.clone();
+    let failed = Arc::new(Mutex::new(None::<String>));
+    let f = failed.clone();
+    let p = Params {
+        fps,
+        bitrate_kbps: 4000,
+        max_height,
+        src_size: Some((1920, 1080)),
+        show_cursor: false,
+    };
+    let run = start_one(
+        &Source::Test,
+        enc,
+        &p,
+        Arc::new(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+        }),
+        Arc::new(move |why| {
+            if let Ok(mut g) = f.lock() {
+                g.get_or_insert(why);
+            }
+        }),
+    )?;
+    let start = std::time::Instant::now();
+    let before = count.load(Ordering::SeqCst);
+    std::thread::sleep(Duration::from_millis(1200));
+    let n = count.load(Ordering::SeqCst) - before;
+    let secs = start.elapsed().as_secs_f64();
+    drop(run);
+    if let Some(why) = failed.lock().ok().and_then(|mut g| g.take()) {
+        bail!("{why}");
+    }
+    if n == 0 {
+        bail!("started, then produced no frames");
+    }
+    Ok(n as f64 / secs)
 }
 
 /// Try encoders in order until one runs.

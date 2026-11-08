@@ -54,6 +54,23 @@ enum Cmd {
     Unlock,
     /// Grant screen-capture permission now (shows the portal dialog on this PC).
     SetupCapture,
+    /// Check that this PC can stream: test-encodes with every encoder and says what to install.
+    Doctor,
+}
+
+/// `dishus doctor` runs `dishus-daemon --doctor`, preferring the daemon installed next to this
+/// binary (the tarball and `cargo install` put them together), then PATH.
+fn doctor() -> Result<()> {
+    let sibling = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("dishus-daemon")))
+        .filter(|p| p.is_file());
+    let daemon = sibling.unwrap_or_else(|| PathBuf::from("dishus-daemon"));
+    let status = std::process::Command::new(&daemon)
+        .arg("--doctor")
+        .status()
+        .with_context(|| format!("running {} --doctor", daemon.display()))?;
+    std::process::exit(status.code().unwrap_or(1));
 }
 
 fn runtime_socket() -> Result<PathBuf> {
@@ -376,6 +393,7 @@ async fn main() -> Result<()> {
             }
             Err(e) => return Err(e),
         },
+        Cmd::Doctor => doctor()?,
         Cmd::SetupCapture => {
             println!(
                 "A screen-share dialog should appear on this PC. Select ALL monitors and allow it to be remembered."

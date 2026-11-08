@@ -14,6 +14,13 @@ ok() { printf '\033[32m✓\033[0m %s\n' "$*"; }
 if [ "${1:-}" = "--uninstall" ]; then
   systemctl --user disable --now dishus.service 2>/dev/null || true
   rm -f "$bin/dishus-daemon" "$bin/dishus" "$unit_dir/dishus.service"
+  # xdph calls the picker for EVERY app's screen share; removing it while xdph.conf still
+  # names it would break screen sharing everywhere.
+  if grep -qs dishus-share-picker "${XDG_CONFIG_HOME:-$HOME/.config}/hypr/xdph.conf"; then
+    warn "kept $bin/dishus-share-picker: your hypr/xdph.conf still uses it. Remove that line, then the file."
+  else
+    rm -f "$bin/dishus-share-picker"
+  fi
   systemctl --user daemon-reload
   ok "removed. Your pairings and settings are kept in ~/.config/dishus and ~/.local/state/dishus"
   exit 0
@@ -30,26 +37,27 @@ if ! "$here/bin/dishus" --version >/dev/null 2>&1; then
   exit 1
 fi
 
-# 2. GStreamer pieces
-missing=()
-have() { gst-inspect-1.0 "$1" >/dev/null 2>&1; }
-command -v gst-inspect-1.0 >/dev/null || missing+=("gstreamer tools (gst-inspect-1.0)")
-have pipewiresrc || missing+=("GStreamer PipeWire plugin")
-have h264parse || missing+=("gst-plugins-bad (h264parse)")
-enc=""
-for e in nvh264enc vah264enc x264enc openh264enc; do have "$e" && { enc=$e; break; }; done
-[ -n "$enc" ] || missing+=("an H.264 encoder: NVIDIA → gst-plugins-bad (nvcodec); Intel/AMD → gst-plugin-va; any CPU → x264 (gst-plugins-ugly)")
-if [ ${#missing[@]} -gt 0 ]; then
-  warn "missing:"; printf '    - %s\n' "${missing[@]}"
-  cat <<'EOF'
-  Arch:          sudo pacman -S gstreamer gst-plugins-base gst-plugins-bad gst-plugin-pipewire gst-plugins-ugly
-  Ubuntu/Debian: sudo apt install gstreamer1.0-tools gstreamer1.0-plugins-bad gstreamer1.0-pipewire gstreamer1.0-plugins-ugly
-  Fedora:        sudo dnf install gstreamer1-plugins-bad-free gstreamer1-plugins-ugly-free pipewire-gstreamer
-EOF
+# 2. Can this PC capture and encode video? `dishus-daemon --doctor` really test-encodes with
+#    every encoder and prints the exact packages for this distro + GPU if something is missing.
+if ! "$here/bin/dishus-daemon" --version >/dev/null 2>&1; then
+  warn "dishus-daemon can't start: GStreamer itself is not installed:"
+  "$here/bin/dishus-daemon" --version 2>&1 | head -2 | sed 's/^/    /' || true
+  id_like=$(. /etc/os-release 2>/dev/null; echo "${ID:-} ${ID_LIKE:-}")
+  case " $id_like " in
+    *" arch "*)                echo "  sudo pacman -S --needed gstreamer gst-plugins-base gst-plugins-bad-libs gst-plugin-pipewire" ;;
+    *" debian "*|*" ubuntu "*) echo "  sudo apt install gstreamer1.0-plugins-base gstreamer1.0-plugins-bad gstreamer1.0-pipewire" ;;
+    *" fedora "*)              echo "  sudo dnf install gstreamer1 gstreamer1-plugins-base gstreamer1-plugins-bad-free pipewire-gstreamer" ;;
+    *)                         echo "  install GStreamer 1.x with its base and \"bad\" plugins and the PipeWire plugin" ;;
+  esac
   echo "  Then run ./install.sh again."
   exit 1
 fi
-ok "GStreamer found (encoder: $enc)"
+if ! "$here/bin/dishus-daemon" --doctor; then
+  echo
+  warn "video can't work yet: run the command above, then ./install.sh again."
+  exit 1
+fi
+echo
 
 # 3. Install
 install -Dm755 "$here/bin/dishus-daemon" "$bin/dishus-daemon"

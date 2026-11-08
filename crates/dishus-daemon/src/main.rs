@@ -19,7 +19,7 @@ use dishus_daemon::{
 
 fn usage() -> ! {
     eprintln!(
-        "usage: dishus-daemon [--version]\n\nConfiguration: $XDG_CONFIG_HOME/dishus/config.toml\nControl it with the `dishus` CLI."
+        "usage: dishus-daemon [--version | --doctor]\n\nConfiguration: $XDG_CONFIG_HOME/dishus/config.toml\nControl it with the `dishus` CLI."
     );
     std::process::exit(2);
 }
@@ -118,6 +118,15 @@ async fn main() -> Result<()> {
             "--version" | "-V" => {
                 println!("dishus-daemon {}", env!("CARGO_PKG_VERSION"));
                 return Ok(());
+            }
+            "--doctor" => {
+                #[cfg(feature = "capture")]
+                std::process::exit(dishus_daemon::doctor::run());
+                #[cfg(not(feature = "capture"))]
+                {
+                    eprintln!("this dishus-daemon was built without screen capture");
+                    std::process::exit(1);
+                }
             }
             "--capture-worker" => {
                 rustix::process::umask(rustix::fs::Mode::from_raw_mode(0o077));

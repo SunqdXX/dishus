@@ -68,11 +68,16 @@ You need a Linux PC (Wayland with a screen-share portal, or X11) and an Android 
 
 1. **Download** both files from the [latest release](https://github.com/SunqdXX/dishus/releases/latest):
    `dishus-…-linux-x86_64.tar.gz` (PC) and `DiShus-….apk` (phone).
-2. **PC:** unpack and run the installer. It installs for your user only and tells you if anything
-   is missing (GStreamer pieces, keyboard/mouse access).
+2. **PC:** unpack and run the installer. It installs for your user only. First it test-encodes
+   video with every encoder your PC could use (NVIDIA, Intel/AMD graphics, or the CPU), and if
+   something is missing it prints the one install command for your distro and GPU. Any PC works:
+   without a supported GPU, DiShus encodes on the CPU.
    ```sh
    tar xf dishus-*-linux-x86_64.tar.gz && cd dishus-*-linux-x86_64 && ./install.sh
    ```
+   For example, Arch with Intel graphics:
+   `sudo pacman -S --needed gst-plugin-va intel-media-driver gst-plugin-pipewire gst-plugins-ugly`.
+   Check again any time with `dishus doctor`.
    The prebuilt PC binaries need glibc ≥ 2.39 (Arch, Ubuntu 24.04+, Debian 13+, Fedora 40+).
    On older systems, build from source (below).
 3. **Phone:** open the APK to install it (allow "install unknown apps" for your browser or file
@@ -113,9 +118,11 @@ Runtime packages (Arch names):
   - `gst-plugins-bad-libs`: NVENC (`nvcodec`) and `h264parse`
   - `gst-plugin-pipewire`, `pipewire`, `xdg-desktop-portal`
   - the portal backend for your desktop (`xdg-desktop-portal-hyprland`, `-gnome`, `-kde`, …)
+- **An H.264 encoder** (at least one; `dishus doctor` tells you which work):
+  - NVIDIA: included in `gst-plugins-bad-libs`, plus the proprietary driver
+  - Intel: `gst-plugin-va` + `intel-media-driver`; AMD: `gst-plugin-va` (driver is in `mesa`)
+  - any CPU: `gst-plugins-ugly` (x264)
 - **Optional:**
-  - `gst-plugin-va`: VA-API on Intel/AMD
-  - `gst-plugins-ugly`: x264 software encoder
   - `gst-plugins-bad`: openh264
   - `gst-plugins-good`: X11 capture
 
@@ -225,6 +232,7 @@ dishus revoke <name|id>        remove a phone and cut its session immediately
 dishus kill                    PANIC: cut every session and refuse everything until…
 dishus unlock                  …you leave lockdown (lockdown survives restarts)
 dishus setup-capture           re-grant screen-capture permission
+dishus doctor                  can this PC stream? test-encodes with every encoder, says what to install
 ```
 
 `list` and `revoke` also work when the daemon is stopped; they edit the device file directly.
@@ -244,7 +252,7 @@ pairing_ttl_secs = 60         # pairing link lifetime, 10..=60
 udp_port = 0                  # 0 = random; set to pin a port for a firewall/port-forward rule
 
 [video]
-encoder = "auto"              # auto | nvenc | vaapi | x264 | openh264
+encoder = "auto"              # auto | nvenc | vaapi | vaapi-lp | x264 | openh264
 max_bitrate_kbps = 20000      # ceiling for the adaptive controller
 show_cursor = true
 ```
@@ -334,9 +342,10 @@ Tested on Arch Linux, Hyprland 0.57, NVIDIA RTX, NVENC, with a Samsung Galaxy Z 
 
 | | |
 |---|---|
-| ✅ | 69 automated tests (protocol, pairing, expiry/renew, allowlist, revoke, kill/lockdown, idle timeout, held-key release on silence, split frames, slow capture start, stuck-video recovery, vault crypto, frame-rate cap on a live pipeline); end-to-end suite run repeatedly with no flakes |
+| ✅ | 73 automated tests (protocol, pairing, expiry/renew, allowlist, revoke, kill/lockdown, idle timeout, held-key release on silence, split frames, slow capture start, stuck-video recovery, vault crypto, frame-rate cap on a live pipeline); end-to-end suite run repeatedly with no flakes |
 | ✅ | Soak suite against isolated daemons (test source and X11 on Xvfb): every scenario ×10 — pairing, renew, revoke, kill/unlock, expiry, quick restarts (single instance, port kept), worker leaks, memory |
 | ✅ | **Real desktop on the phone through the Wayland portal** (Hyprland, xdph restore token, PipeWire, NVENC, 180 Hz monitor): 30 fps cap held 10/10 with 1 keyframe and no gaps; on LAN the phone runs at 60 fps with every received frame rendered, 3–4 ms |
+| ✅ | CPU encoding (x264) on the real desktop at 2560×1440: 30 fps 10/10, no gaps, ~90 % of one core; `dishus doctor` and the installer tested with plugins hidden (fresh-install case) |
 | ✅ | Hyprland, no dialog at the PC: rejected token answered by `dishus-share-picker` 10/10; valid token reused without calling the picker 10/10; phone disconnect/reconnect 10/10 |
 | ✅ | KDE Plasma (Wayland portal): video, restore token reused 10/10 without a dialog |
 | ✅ | The signed release APK and tarball, installed from GitHub Releases on a clean PC and phone |
@@ -351,7 +360,7 @@ Tested on Arch Linux, Hyprland 0.57, NVIDIA RTX, NVENC, with a Samsung Galaxy Z 
 |---|---|
 | ⚠️ | GNOME portal (same code path as Hyprland and KDE, but never run there); phone input on KDE |
 | ⚠️ | A real X11 desktop (only Xvfb) |
-| ⚠️ | VA-API, x264 and openh264 encoders (only NVENC installed here) |
+| ⚠️ | VA-API on Intel/AMD (no such GPU here; `dishus doctor` reports it), openh264. Install hints for Ubuntu/Debian and Fedora are unverified on those systems (Arch's are checked against the repos) |
 | ⚠️ | Other phones / Android versions than the one above |
 
 **Known gaps and limits:**
