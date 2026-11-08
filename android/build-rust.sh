@@ -14,5 +14,6 @@ find "$here/app/src/main/jniLibs" -name '*.so' ! -name 'libdishus_core.so' -dele
 cargo build -p dishus-core --features ffi --lib
 cargo run -p dishus-core --features bindgen-cli --bin uniffi-bindgen -- \
     generate --library "$root/target/debug/libdishus_core.so" --language kotlin \
+    --config "$here/uniffi.toml" \
     --out-dir "$here/app/src/main/java" --no-format
 echo "Rust core + Kotlin bindings ready."

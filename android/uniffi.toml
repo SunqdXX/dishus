@@ -1,0 +1,5 @@
+# UniFFI bindgen config for the Android bindings (passed with --config by build-rust.sh).
+[defaults.bindings.kotlin]
+# Android-safe code: no java.lang.ref.Cleaner (API 33+); the app supports API 28+.
+android = true
+android_cleaner = true
