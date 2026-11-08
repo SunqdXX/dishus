@@ -57,11 +57,11 @@ impl Capture {
             }],
         }
     }
-    fn source(&self, idx: u8) -> Result<(Source, Option<u32>)> {
+    fn source(&self, idx: u8) -> Result<(Source, Option<(u32, u32)>)> {
         match self {
             Capture::Portal(p) => p.source(idx),
             Capture::X11 => Ok((Source::X11, None)),
-            Capture::Test => Ok((Source::Test, Some(1080))),
+            Capture::Test => Ok((Source::Test, Some((1920, 1080)))),
         }
     }
 }
@@ -167,12 +167,12 @@ async fn session(opts: WorkerOptions, out: Out, encoders: Vec<pipeline::Encoder>
                 max_height,
             } => {
                 running = None; // stop the previous pipeline first
-                let started = capture.source(monitor).and_then(|(src, src_height)| {
+                let started = capture.source(monitor).and_then(|(src, src_size)| {
                     let p = Params {
                         fps,
                         bitrate_kbps,
                         max_height,
-                        src_height,
+                        src_size,
                         show_cursor: opts.show_cursor,
                     };
                     let o1 = out.clone();

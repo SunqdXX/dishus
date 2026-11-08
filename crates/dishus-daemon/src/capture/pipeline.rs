@@ -80,7 +80,8 @@ pub struct Params {
     pub fps: u8,
     pub bitrate_kbps: u32,
     pub max_height: u16,
-    pub src_height: Option<u32>,
+    /// Source size if known before the pipeline runs (portal, test source; not X11).
+    pub src_size: Option<(u32, u32)>,
     pub show_cursor: bool,
 }
 
@@ -110,19 +111,31 @@ fn source_desc(src: &Source, p: &Params) -> Result<String> {
     })
 }
 
-fn target_height(p: &Params) -> Option<u32> {
-    match (p.max_height, p.src_height) {
-        (0, _) => None,
-        (h, Some(sh)) if sh <= u32::from(h) => None,
-        (h, _) => Some(u32::from(h) & !1),
+/// Caps suffix for downscaling to `max_height`, or "" for native size.
+///
+/// Always pins square pixels: with only `height` fixed, scalers keep the width and change the
+/// pixel aspect ratio instead (1920x1080 -> 1920x720 PAR 2/3), which the phone shows squashed.
+/// When the source size is known the width is given explicitly and rounded to even, since
+/// 4:2:0 H.264 needs even dimensions and some Android decoders reject odd ones.
+fn scale_caps(p: &Params) -> String {
+    let h = match (p.max_height, p.src_size) {
+        (0, _) => return String::new(),
+        (h, Some((_, sh))) if sh <= u32::from(h) => return String::new(),
+        (h, _) => u32::from(h) & !1,
+    };
+    match p.src_size {
+        Some((sw, sh)) if sh > 0 => {
+            let w = ((u64::from(sw) * u64::from(h) + u64::from(sh) / 2) / u64::from(sh)) as u32;
+            let w = (w + 1) & !1;
+            format!(",width={w},height={h},pixel-aspect-ratio=1/1")
+        }
+        _ => format!(",height={h},pixel-aspect-ratio=1/1"),
     }
 }
 
 fn encoder_desc(enc: Encoder, p: &Params) -> String {
     let kbps = p.bitrate_kbps;
-    let scale = target_height(p)
-        .map(|h| format!(",height={h}"))
-        .unwrap_or_default();
+    let scale = scale_caps(p);
     match enc {
         // Without scaling NVENC takes BGRx/RGBx straight from system memory and converts on the
         // GPU; that avoids loading NVRTC (cudaconvertscale), which costs ~100 MB of RSS.
@@ -350,4 +363,43 @@ pub fn start(
         }
     }
     bail!("all encoders failed: {}", errors.join("; "))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn p(max_height: u16, src_size: Option<(u32, u32)>) -> Params {
+        Params {
+            fps: 30,
+            bitrate_kbps: 1000,
+            max_height,
+            src_size,
+            show_cursor: true,
+        }
+    }
+
+    #[test]
+    fn scaling_keeps_aspect_and_even_sizes() {
+        assert_eq!(scale_caps(&p(0, Some((2560, 1440)))), "");
+        assert_eq!(scale_caps(&p(1440, Some((2560, 1440)))), "");
+        assert_eq!(
+            scale_caps(&p(720, Some((1920, 1080)))),
+            ",width=1280,height=720,pixel-aspect-ratio=1/1"
+        );
+        assert_eq!(
+            scale_caps(&p(1080, Some((2560, 1440)))),
+            ",width=1920,height=1080,pixel-aspect-ratio=1/1"
+        );
+        // 21:9 ultrawide: 1706.67 -> 1707 -> even 1708
+        assert_eq!(
+            scale_caps(&p(720, Some((2560, 1080)))),
+            ",width=1708,height=720,pixel-aspect-ratio=1/1"
+        );
+        // unknown source size (X11): still square pixels
+        assert_eq!(
+            scale_caps(&p(720, None)),
+            ",height=720,pixel-aspect-ratio=1/1"
+        );
+    }
 }

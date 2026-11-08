@@ -163,7 +163,7 @@ impl PortalSession {
     }
 
     /// PipeWire source for monitor `idx`, plus its height (for "don't upscale").
-    pub fn source(&self, idx: u8) -> anyhow::Result<(Source, Option<u32>)> {
+    pub fn source(&self, idx: u8) -> anyhow::Result<(Source, Option<(u32, u32)>)> {
         let s = self
             .streams
             .get(usize::from(idx))
@@ -173,7 +173,7 @@ impl PortalSession {
                 fd: self.fd.try_clone()?,
                 node: s.node,
             },
-            (s.info.height > 0).then_some(s.info.height),
+            (s.info.width > 0 && s.info.height > 0).then_some((s.info.width, s.info.height)),
         ))
     }
 }
