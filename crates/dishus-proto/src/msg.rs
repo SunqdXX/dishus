@@ -379,8 +379,8 @@ mod tests {
     fn renew_bounds() {
         assert!(ClientMsg::RenewPairing { days: 0 }.validate().is_err());
         assert!(ClientMsg::RenewPairing { days: 30 }.validate().is_ok());
-        assert!(ClientMsg::RenewPairing { days: 60 }.validate().is_ok());
-        assert!(ClientMsg::RenewPairing { days: 61 }.validate().is_err());
+        assert!(ClientMsg::RenewPairing { days: 180 }.validate().is_ok());
+        assert!(ClientMsg::RenewPairing { days: 181 }.validate().is_err());
     }
 
     #[test]

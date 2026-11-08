@@ -415,7 +415,10 @@ async fn renew_from_inside_session() {
     ph.pair(&pc.pairing_link(), "p").await.unwrap();
     let before = pc.state.device(&ph.endpoint_id()).unwrap().expires_at;
     let s = connect(&ph, &pc.as_paired()).await.unwrap();
-    s.send(ClientMsg::RenewPairing { days: 60 }).unwrap();
+    s.send(ClientMsg::RenewPairing {
+        days: dishus_proto::MAX_EXPIRY_DAYS,
+    })
+    .unwrap();
     let exp = loop {
         match timeout(Duration::from_secs(5), s.next_control())
             .await
@@ -426,10 +429,13 @@ async fn renew_from_inside_session() {
             _ => continue,
         }
     };
-    assert!(exp > before);
+    assert!(exp >= before);
     assert_eq!(pc.state.device(&ph.endpoint_id()).unwrap().expires_at, exp);
     assert!(
-        s.send(ClientMsg::RenewPairing { days: 61 }).is_err(),
+        s.send(ClientMsg::RenewPairing {
+            days: dishus_proto::MAX_EXPIRY_DAYS + 1
+        })
+        .is_err(),
         "validated client side too"
     );
 }

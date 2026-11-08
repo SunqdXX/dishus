@@ -54,9 +54,9 @@ pub const MAX_MONITORS: usize = 16;
 /// Pairing tokens are 256-bit.
 pub const TOKEN_LEN: usize = 32;
 /// Default lifetime of a pairing (days).
-pub const DEFAULT_EXPIRY_DAYS: u16 = 30;
+pub const DEFAULT_EXPIRY_DAYS: u16 = 180;
 /// Maximum lifetime of a pairing (days).
-pub const MAX_EXPIRY_DAYS: u16 = 60;
+pub const MAX_EXPIRY_DAYS: u16 = 180;
 
 /// The phone sends something at least this often (ms); the PC drops the session after
 /// [`SESSION_IDLE_TIMEOUT_MS`] without traffic and releases every key.

@@ -139,7 +139,7 @@ private fun QuickSettings(app: DishusApp, c: RemoteController, onDismiss: () -> 
             Text("Pairing", style = MaterialTheme.typography.labelLarge)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = { c.renew(30) }, enabled = ui.connected) { Text("Renew 30 days") }
-                OutlinedButton(onClick = { c.renew(60) }, enabled = ui.connected) { Text("Renew 60 days") }
+                OutlinedButton(onClick = { c.renew(180) }, enabled = ui.connected) { Text("Renew 6 months") }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = { c.releaseAll() }) { Text("Release all keys") }

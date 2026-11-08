@@ -154,7 +154,7 @@ Configure auto-login in your display manager, for example SDDM `[Autologin]` or 
 dishus status                  daemon state, PC id, relays, capture/input backends, sessions
 dishus pair [--skip-capture-setup]
 dishus list                    paired phones, expiry, last seen
-dishus renew <name|id> [--days N]   extend (1–60 days, default 30)
+dishus renew <name|id> [--days N]   extend (1–180 days, default 180)
 dishus revoke <name|id>        remove a phone and cut its session immediately
 dishus kill                    PANIC: cut every session and refuse everything until…
 dishus unlock                  …you leave lockdown (lockdown survives restarts)
@@ -173,7 +173,7 @@ daemon sends a desktop notification for pairings, connects, disconnects, revokes
 pc_name = "my-desktop"        # shown on the phone (default: hostname)
 relays = []                   # [] = iroh's public relays; or ["https://relay.example.org/"]
 disable_relays = false        # true = direct connections only (LAN / reachable hosts)
-expiry_days = 30              # pairing lifetime, 1..=60
+expiry_days = 180             # pairing lifetime, 1..=180
 pairing_ttl_secs = 60         # pairing link lifetime, 10..=60
 udp_port = 0                  # 0 = random; set to pin a port for a firewall/port-forward rule
 
@@ -210,7 +210,7 @@ Logging: `DISHUS_LOG=debug` (a `tracing` filter). Secrets and tokens are never l
   immediately after unlock.
 - **Screen.** Gear icon opens quick settings:
   - frame rate (Adaptive / 30 / 60), quality, resolution cap, monitor
-  - renew the pairing for 30 or 60 days
+  - renew the pairing for 30 days or 6 months
   - connection path (direct or relay) and app-level round-trip time
   - relay and app settings, disconnect
 - **Keyboard.** Modifier keys: tap = applies to the next key; long-press = locked until tapped

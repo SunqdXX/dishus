@@ -207,7 +207,7 @@ mod tests {
         let exp2 = s.renew(&a, 60, exp + 10).unwrap();
         assert_eq!(exp2, exp + 10 + 60 * DAY_SECS);
         assert!(s.is_allowed(&a, exp + 11));
-        assert!(s.renew(&a, 61, now).is_err());
+        assert!(s.renew(&a, MAX_EXPIRY_DAYS + 1, now).is_err());
         assert!(s.renew(&id(2), 10, now).is_err());
         s.revoke("phone").unwrap();
         assert!(!s.is_allowed(&a, now));

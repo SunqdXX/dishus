@@ -17,7 +17,7 @@ pub struct Config {
     pub relays: Vec<String>,
     /// Disable relays entirely (direct / LAN connections only).
     pub disable_relays: bool,
-    /// Lifetime of a new pairing, days (1..=60).
+    /// Lifetime of a new pairing, days (1..=180).
     pub expiry_days: u16,
     /// Pairing window length, seconds (10..=60; the spec caps the token TTL at 60 s).
     pub pairing_ttl_secs: u64,
@@ -175,7 +175,7 @@ mod tests {
     #[test]
     fn rejects_bad() {
         let c = Config {
-            expiry_days: 61,
+            expiry_days: MAX_EXPIRY_DAYS + 1,
             ..Default::default()
         };
         assert!(c.validate().is_err());

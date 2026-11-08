@@ -12,7 +12,7 @@ use clap::{Parser, Subcommand};
 use tokio::{net::UnixStream, time::timeout};
 
 use dishus_proto::{
-    MAX_EXPIRY_DAYS,
+    DEFAULT_EXPIRY_DAYS, MAX_EXPIRY_DAYS,
     ipc::{IpcDevice, IpcRequest, IpcResponse, MAX_IPC_FRAME},
     read_frame, write_frame,
 };
@@ -45,7 +45,7 @@ enum Cmd {
     /// Extend a phone's pairing.
     Renew {
         device: String,
-        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u16).range(1..=MAX_EXPIRY_DAYS as i64))]
+        #[arg(long, default_value_t = DEFAULT_EXPIRY_DAYS, value_parser = clap::value_parser!(u16).range(1..=MAX_EXPIRY_DAYS as i64))]
         days: u16,
     },
     /// PANIC: cut every session and refuse all connections until `dishus unlock`.
