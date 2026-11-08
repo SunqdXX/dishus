@@ -3,6 +3,13 @@
 Use your Android phone as the screen, keyboard and mouse of your Linux PC, from anywhere,
 peer-to-peer. No accounts, no cloud service of ours, no port forwarding.
 
+<p align="center">
+  <img src="docs/media/remote.gif" alt="Typing on the phone's DiShus keyboard: the command appears and runs in the PC's terminal, the phone shows the PC screen live, and swiping the touchpad moves the PC's pointer" width="100%">
+  <br>
+  <sub>Left: the PC. Right: the phone, which shows the PC screen live and works as its keyboard and touchpad.
+  Recorded on a Galaxy Z Fold7's cover screen against a test desktop.</sub>
+</p>
+
 - **PC side:** `dishus-daemon` (a small Rust systemd *user* service) plus the `dishus` CLI.
 - **Phone side:** a Kotlin/Compose app. The top 60 % shows the PC screen and works as a touchpad.
   The bottom 40 % is a full PC keyboard.
@@ -73,6 +80,8 @@ You need a Linux PC (Wayland with a screen-share portal, or X11) and an Android 
 4. **Pair:** on the PC run `dishus pair`, allow screen sharing (tick *remember* / *allow restore
    token*), then tap **Scan QR** in the app (or copy the `dishus://pair?…` link it prints and use
    **Paste link**). The code is valid for 60 s and one use. Done: tap **Connect**.
+
+   <img src="docs/media/pairing.gif" alt="Pairing: dishus pair shows a QR code and link on the PC; the phone pastes the link and the PC appears in its list" width="100%">
 5. **Stay paired:** a pairing lasts 6 months; renew it while connected (settings panel → *Renew 6 months*) or on the PC with
    `dishus renew <phone>`. `dishus kill` on the PC cuts every session at once (`dishus unlock` undoes it).
 
