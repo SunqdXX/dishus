@@ -12,9 +12,9 @@ peer-to-peer. No accounts, no cloud service of ours, no port forwarding.
   end-to-end-encrypted QUIC.
 - **Licence:** MIT OR Apache-2.0.
 
-> **Status: alpha.** The PC side runs and was tested end-to-end on Hyprland + NVIDIA with a
-> desktop test client. The Android app is written but **has not been compiled yet**.
-> See [Status](#status--whats-verified) before relying on it.
+> **Status: alpha (0.1).** Daily-tested on Hyprland + NVIDIA with a Galaxy Z Fold7, over Wi-Fi
+> and mobile data. Other desktops, GPUs and phones should work but are less tested.
+> See [Status](#status--whats-verified) for exactly what was verified.
 
 ## How it works
 
@@ -32,9 +32,10 @@ peer-to-peer. No accounts, no cloud service of ours, no port forwarding.
                                                                dishus CLI
 ```
 
-- **Video.** Each encoded frame travels on its own QUIC uni-stream. If more than 4 frames are
-  unacknowledged, or a frame misses its 1 s deadline, the PC drops or resets frames and forces a
-  keyframe. The phone never decodes a corrupted half-frame. It also asks for a keyframe on any
+- **Video.** Each encoded frame travels on its own QUIC uni-stream. The number of frames allowed in
+  flight scales with the measured round-trip time (4 on a LAN, more on mobile data). If that is
+  exceeded, or a frame misses its 1 s deadline, the PC drops or resets frames and asks the encoder
+  for a keyframe, re-asking until one arrives. The phone never decodes a corrupted half-frame. It also asks for a keyframe on any
   sequence gap.
 - **Adaptive bitrate and frame rate.** The rate starts at 30 fps. It steps up to 60 fps once the
   link has stayed clean, backs off by 30 % on congestion, and stays inside the bitrate range set by
@@ -70,7 +71,10 @@ You need a Linux PC (Wayland with a screen-share portal, or X11) and an Android 
 3. **Phone:** open the APK to install it (allow "install unknown apps" for your browser or file
    manager when Android asks). Start DiShus and choose an app password.
 4. **Pair:** on the PC run `dishus pair`, allow screen sharing (tick *remember* / *allow restore
-   token*), then tap **Scan QR** in the app. Done: tap **Connect**.
+   token*), then tap **Scan QR** in the app (or copy the `dishus://pair?…` link it prints and use
+   **Paste link**). The code is valid for 60 s and one use. Done: tap **Connect**.
+5. **Stay paired:** a pairing lasts 6 months; renew it while connected (settings panel → *Renew 6 months*) or on the PC with
+   `dishus renew <phone>`. `dishus kill` on the PC cuts every session at once (`dishus unlock` undoes it).
 
 Works over the internet too (mobile data, other Wi-Fi): no port forwarding, no account, no server
 of ours. The connection is end-to-end encrypted between your phone and your PC.

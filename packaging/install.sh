@@ -26,7 +26,7 @@ if ! "$here/bin/dishus" --version >/dev/null 2>&1; then
   warn "the prebuilt binaries don't run on this system:"
   "$here/bin/dishus" --version 2>&1 | head -3 || true
   echo "  They need glibc ≥ 2.39 (Arch, Ubuntu 24.04+, Debian 13+, Fedora 40+) and GStreamer."
-  echo "  On older systems build from source: https://github.com/SunqdXX/dishus#install-pc"
+  echo "  On older systems build from source: https://github.com/SunqdXX/dishus#install-pc-from-source"
   exit 1
 fi
 
