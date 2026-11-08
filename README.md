@@ -19,7 +19,7 @@ peer-to-peer. No accounts, no cloud service of ours, no port forwarding.
   end-to-end-encrypted QUIC.
 - **Licence:** MIT OR Apache-2.0.
 
-> **Status: alpha (0.1.1).** Daily-tested on Hyprland + NVIDIA with a Galaxy Z Fold7, over Wi-Fi
+> **Status: alpha (0.1.2).** Daily-tested on Hyprland + NVIDIA with a Galaxy Z Fold7, over Wi-Fi
 > and mobile data. Other desktops, GPUs and phones should work but are less tested.
 > See [Status](#status--whats-verified) for exactly what was verified.
 
