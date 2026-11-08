@@ -9,6 +9,10 @@ ignore = [
   # `paste`: unmaintained, compile-time-only proc-macro pulled in by iroh -> netwatch ->
   # netlink-packet-core. No vulnerability; no runtime code. Re-check when iroh updates.
   { id = "RUSTSEC-2024-0436", reason = "unmaintained proc-macro, build-time only, transitive via iroh" },
+  # `basic-toml`: unmaintained, used only by askama_derive inside uniffi_bindgen (the Kotlin
+  # binding generator, run at build time). Not linked into the daemon, CLI or phone library.
+  # Latest uniffi (0.32.2) and askama (0.16.1) still use it. Re-check when uniffi updates.
+  { id = "RUSTSEC-2026-0374", reason = "unmaintained, build-time binding generator only, via uniffi_bindgen" },
 ]
 
 [licenses]
