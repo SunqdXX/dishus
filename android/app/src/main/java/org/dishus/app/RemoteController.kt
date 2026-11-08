@@ -164,7 +164,7 @@ class RemoteController(private val app: DishusApp, private val pcId: String) {
                 fatal = fatal,
                 status = when (reason) {
                     "Revoked" -> "This phone's pairing was revoked or expired on the PC."
-                    "Killed" -> "The PC cut all sessions (dishus kill)."
+                    "Killed" -> "The PC cut all sessions (dishus kill). After `dishus unlock` on the PC, tap Connect again."
                     "Replaced" -> "Another session took over."
                     "Expired" -> EXPIRED_MSG
                     "Lockdown" -> LOCKDOWN_MSG
