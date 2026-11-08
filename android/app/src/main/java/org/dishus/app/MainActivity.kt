@@ -4,6 +4,9 @@ import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
@@ -13,6 +16,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
 import androidx.fragment.app.FragmentActivity
 import org.dishus.app.ui.DishusTheme
 import org.dishus.app.ui.HomeScreen
@@ -29,7 +33,11 @@ class MainActivity : FragmentActivity() {
         enableEdgeToEdge()
         val app = application as DishusApp
         setContent {
-            DishusTheme { Root(app, this) }
+            DishusTheme {
+                // The Surface supplies the theme background AND the content colour; without it
+                // plain Text falls back to black and is invisible on a dark window.
+                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) { Root(app, this) }
+            }
         }
     }
 }
