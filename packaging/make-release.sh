@@ -19,6 +19,7 @@ pc="dishus-$ver-linux-x86_64"; stage="$dist/$pc"
 mkdir -p "$stage/bin"
 install -m755 target/release/dishus-daemon target/release/dishus "$stage/bin/"
 install -m755 packaging/install.sh "$stage/install.sh"
+install -m755 packaging/hyprland/dishus-share-picker "$stage/bin/"
 install -m644 packaging/systemd/dishus.service packaging/udev/70-dishus-uinput.rules \
   README.md LICENSE-MIT LICENSE-APACHE "$stage/"
 tar -C "$dist" -czf "$dist/$pc.tar.gz" "$pc"

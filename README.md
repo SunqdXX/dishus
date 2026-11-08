@@ -179,6 +179,41 @@ phone keyboard.
 Configure auto-login in your display manager, for example SDDM `[Autologin]` or greetd
 `initial_session`. DiShus does not change it for you.
 
+### Hyprland: no screen-share dialog when the phone connects
+
+The restore token normally makes reconnects silent. xdph still shows its picker when it rejects
+the stored token (for example one written under another desktop, or after an xdph update), and
+then nobody is at the PC to click it. (With no token at all, the phone is refused: pair at the PC
+first.) DiShus ships a small picker wrapper that answers that dialog
+for DiShus only, and leaves every other app's screen-share request to your normal picker:
+
+```sh
+install -Dm755 packaging/hyprland/dishus-share-picker ~/.local/bin/dishus-share-picker
+# from a release tarball, install.sh has already put it there
+```
+
+`~/.config/hypr/xdph.conf`:
+
+```
+screencopy {
+    allow_token_by_default = true
+    custom_picker_binary = /home/YOU/.local/bin/dishus-share-picker
+}
+```
+
+then `systemctl --user restart xdg-desktop-portal-hyprland`. If you already used a custom picker,
+put its path on the first line of `~/.config/dishus/share-picker-fallback`.
+
+How it decides: while the daemon's capture worker is waiting for the portal *for a phone*, it
+creates `$XDG_RUNTIME_DIR/dishus/autoshare` (mode 0600, yours). The wrapper takes that file
+(one use, at most 20 s old, must be a regular file you own) and answers "the focused monitor,
+whole screen, remember it". With no such file, it starts your normal picker unchanged. `dishus
+pair` and `dishus setup-capture` never create the file, so at the PC you always get the real
+dialog. Each answer is logged: `journalctl -t dishus-share-picker`.
+
+Restore tokens are also stored per desktop (`portal-restore-token-<desktop>`), so switching
+between, say, Hyprland and Plasma no longer throws away the other desktop's permission.
+
 ## CLI
 
 ```
@@ -225,8 +260,9 @@ refused):
 |---|---|
 | `~/.config/dishus/secret.key` | PC identity (Ed25519) |
 | `~/.config/dishus/devices.toml` | allowlist: phone public keys, names, expiry |
-| `~/.local/state/dishus/` | portal restore token, lockdown flag |
+| `~/.local/state/dishus/` | portal restore tokens (one per desktop), lockdown flag |
 | `$XDG_RUNTIME_DIR/dishus/control.sock` | CLI socket |
+| `$XDG_RUNTIME_DIR/dishus/autoshare` | present only while a phone's capture request waits for the portal (Hyprland picker wrapper) |
 
 Logging: `DISHUS_LOG=debug` (a `tracing` filter). Secrets and tokens are never logged.
 

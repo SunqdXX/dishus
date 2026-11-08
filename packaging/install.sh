@@ -54,6 +54,9 @@ ok "GStreamer found (encoder: $enc)"
 # 3. Install
 install -Dm755 "$here/bin/dishus-daemon" "$bin/dishus-daemon"
 install -Dm755 "$here/bin/dishus" "$bin/dishus"
+if [ -f "$here/bin/dishus-share-picker" ]; then
+  install -Dm755 "$here/bin/dishus-share-picker" "$bin/dishus-share-picker"
+fi
 mkdir -p "$unit_dir"
 sed 's|^ExecStart=.*|ExecStart=%h/.local/bin/dishus-daemon|' "$here/dishus.service" > "$unit_dir/dishus.service"
 ok "installed to $bin and $unit_dir"
@@ -69,6 +72,19 @@ else
   echo "    echo uinput | sudo tee /etc/modules-load.d/uinput.conf"
   echo "    sudo udevadm control --reload && sudo modprobe uinput && sudo udevadm trigger"
   echo "  then: systemctl --user restart dishus"
+fi
+
+# 4b. Hyprland: answer xdph's picker for phone requests (opt-in, we never edit your config)
+if [ -x "$bin/dishus-share-picker" ] && command -v hyprctl >/dev/null 2>&1; then
+  xdph="${XDG_CONFIG_HOME:-$HOME/.config}/hypr/xdph.conf"
+  if ! grep -qs 'dishus-share-picker' "$xdph"; then
+    warn "Hyprland: so the PC never shows a screen-share dialog when the phone connects, add to $xdph:"
+    echo "    screencopy {"
+    echo "        allow_token_by_default = true"
+    echo "        custom_picker_binary = $bin/dishus-share-picker"
+    echo "    }"
+    echo "  then: systemctl --user restart xdg-desktop-portal-hyprland   (README: 'Hyprland: no screen-share dialog')"
+  fi
 fi
 
 # 5. Start

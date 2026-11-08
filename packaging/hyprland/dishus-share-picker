@@ -1,0 +1,46 @@
+#!/bin/sh
+# DiShus screen-share picker for xdg-desktop-portal-hyprland (xdph).
+#
+# When DiShus opens screen capture for a paired phone, nobody may be at the PC to click the
+# picker. The DiShus capture worker then creates $XDG_RUNTIME_DIR/dishus/autoshare (mode 0600)
+# for the few seconds of its request. If that file exists, belongs to us and is fresh, this
+# picker consumes it (one-shot) and answers "the focused monitor, whole screen, remember".
+# In every other case it runs your normal picker, unchanged.
+#
+# Install (see README "Hyprland: no screen-share dialog"):
+#   install -Dm755 dishus-share-picker ~/.local/bin/dishus-share-picker
+#   ~/.config/hypr/xdph.conf:   screencopy { custom_picker_binary = /home/YOU/.local/bin/dishus-share-picker }
+# Your previous picker (default: hyprland-share-picker) can be named, one path per line, in
+#   ${XDG_CONFIG_HOME:-~/.config}/dishus/share-picker-fallback
+
+signal="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/dishus/autoshare"
+max_age=20
+log() { logger -t dishus-share-picker -- "$*" 2>/dev/null || true; }
+
+fallback() {
+    f="${XDG_CONFIG_HOME:-$HOME/.config}/dishus/share-picker-fallback"
+    p=""
+    [ -r "$f" ] && p=$(head -n1 "$f")
+    [ -n "$p" ] && [ -x "$p" ] || p=hyprland-share-picker
+    log "no DiShus request pending; showing $p"
+    exec "$p" "$@"
+}
+
+# Fresh, ours, a regular file (not a symlink)?
+if [ -f "$signal" ] && [ ! -L "$signal" ] && [ -O "$signal" ]; then
+    age=$(( $(date +%s) - $(stat -c %Y "$signal" 2>/dev/null || echo 0) ))
+    claimed="$signal.taken.$$"
+    # Claim atomically so two concurrent requests can't both use one signal.
+    if [ "$age" -ge 0 ] && [ "$age" -le "$max_age" ] && mv "$signal" "$claimed" 2>/dev/null; then
+        rm -f "$claimed"
+        # The monitor is looked up now, by what Hyprland reports: never a hard-coded port name.
+        out=$(hyprctl monitors 2>/dev/null | awk '/^Monitor /{n=$2} /focused: yes/{print n; exit}')
+        [ -n "$out" ] || out=$(hyprctl monitors 2>/dev/null | awk '/^Monitor /{print $2; exit}')
+        if [ -n "$out" ]; then
+            log "DiShus request: shared monitor $out (whole screen, remembered)"
+            printf '[SELECTION]r/screen:%s\n' "$out"
+            exit 0
+        fi
+    fi
+fi
+fallback "$@"
