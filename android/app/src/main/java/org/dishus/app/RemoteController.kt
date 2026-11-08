@@ -114,7 +114,7 @@ class RemoteController(private val app: DishusApp, private val pcId: String) {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                val refusal = (e as? DishusException.Rejected)?.msg
+                val refusal = (e as? DishusException.Rejected)?.message
                 val pc = runCatching { app.core.pairedPcs().firstOrNull { it.id == pcId } }.getOrNull()
                 if (refusal == "Expired" || (pc != null && pc.expiresAt.toLong() <= System.currentTimeMillis() / 1000)) {
                     // Retrying can never succeed.

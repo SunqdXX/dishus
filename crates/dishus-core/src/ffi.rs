@@ -16,7 +16,10 @@ use crate::{
     vault::{self, KdfParams, PairedPc, VaultData},
 };
 
+/// `flat_error`: Kotlin sees each variant with `message` = the Display text below. (Non-flat
+/// errors render as `msg=…`, and unit variants with an empty message, which the app showed raw.)
 #[derive(Debug, thiserror::Error, uniffi::Error)]
+#[uniffi(flat_error)]
 pub enum DishusError {
     #[error("locked")]
     Locked,
