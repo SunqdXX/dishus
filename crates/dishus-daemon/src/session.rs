@@ -16,9 +16,9 @@ use iroh::endpoint::{Connection, SendStream};
 use tokio::{sync::mpsc, time::timeout};
 
 use dishus_proto::{
-    ByeReason, ClientMsg, FrameError, HEARTBEAT_INTERVAL_MS, MAX_CONTROL_FRAME, MonitorInfo,
-    NoticeKind, PROTO_VERSION, SESSION_IDLE_TIMEOUT_MS, ServerMsg, StreamParams, VideoHeader,
-    read_frame, video::FLAG_KEYFRAME, write_frame,
+    ByeReason, CAPTURE_OPEN_TIMEOUT_MS, ClientMsg, FrameError, HEARTBEAT_INTERVAL_MS,
+    MAX_CONTROL_FRAME, MonitorInfo, NoticeKind, PROTO_VERSION, SESSION_IDLE_TIMEOUT_MS, ServerMsg,
+    StreamParams, VideoHeader, read_frame, video::FLAG_KEYFRAME, write_frame,
 };
 
 use crate::{
@@ -28,7 +28,7 @@ use crate::{
 };
 
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
-const CAPTURE_OPEN_TIMEOUT: Duration = Duration::from_secs(15);
+const CAPTURE_OPEN_TIMEOUT: Duration = Duration::from_millis(CAPTURE_OPEN_TIMEOUT_MS);
 const EXPIRY_CHECK: Duration = Duration::from_secs(15);
 /// Release held input after this long without any message (heartbeats come every second).
 const RELEASE_ON_SILENCE: Duration = Duration::from_millis(2 * HEARTBEAT_INTERVAL_MS + 500);

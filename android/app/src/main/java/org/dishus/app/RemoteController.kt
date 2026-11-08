@@ -172,7 +172,9 @@ class RemoteController(private val app: DishusApp, private val pcId: String) {
             )
             if (fatal || reason == "Replaced") return
             if (reason == "Lockdown") backoff = backoff.coerceAtLeast(5_000)
-            delay(backoff)
+            // The PC went quiet (usually the network changed under us): retry at once; if it is
+            // really gone, the failed connect falls back to the normal backoff.
+            delay(if (reason == "PC not responding") 300L else backoff)
         }
     }
 

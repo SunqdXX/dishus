@@ -18,8 +18,8 @@ use iroh::{
 use tokio::{sync::mpsc, task::JoinHandle, time::timeout};
 
 use dishus_proto::{
-    ALPN_PAIR, ALPN_SESSION, ClientMsg, FrameError, HEARTBEAT_INTERVAL_MS, MAX_CONTROL_FRAME,
-    MAX_VIDEO_FRAME, PROTO_VERSION, PairRequest, PairResponse, PairingInfo,
+    ALPN_PAIR, ALPN_SESSION, CAPTURE_OPEN_TIMEOUT_MS, ClientMsg, FrameError, HEARTBEAT_INTERVAL_MS,
+    MAX_CONTROL_FRAME, MAX_VIDEO_FRAME, PROTO_VERSION, PairRequest, PairResponse, PairingInfo,
     SESSION_IDLE_TIMEOUT_MS, ServerMsg, StreamParams, VideoHeader, frame::Validate, read_frame,
     write_frame,
 };
@@ -108,7 +108,11 @@ impl NetConfig {
 
 pub struct Client {
     endpoint: Endpoint,
+    /// When the app last reported a network change (see [`Client::network_change`]).
+    net_changed: NetChanged,
 }
+
+type NetChanged = Arc<std::sync::Mutex<Option<Instant>>>;
 
 fn pc_addr(endpoint_id: &[u8; 32], relays: &[String], addrs: &[String]) -> Result<EndpointAddr> {
     let id = EndpointId::from_bytes(endpoint_id).context("bad PC id")?;
@@ -139,6 +143,7 @@ impl Client {
         b = b.secret_key(sk).relay_mode(net.relay_mode()?);
         Ok(Self {
             endpoint: b.bind().await?,
+            net_changed: Arc::default(),
         })
     }
 
@@ -189,7 +194,9 @@ impl Client {
 
     /// Tell iroh the network may have changed (Android: iroh can't see it from native code).
     /// Re-probes paths at once so live connections migrate instead of stalling.
+    /// Also lets live sessions give up quickly on a PC that went silent with the old network.
     pub async fn network_change(&self) {
+        *self.net_changed.lock().expect("net_changed") = Some(Instant::now());
         self.endpoint.network_change().await;
     }
 
@@ -208,7 +215,7 @@ impl Client {
             // The PC may refuse right after the handshake: depending on timing that surfaces
             // here or as an error while opening the control stream.
             let closed = conn.clone();
-            Session::start(conn, device_name, params)
+            Session::start(conn, device_name, params, self.net_changed.clone())
                 .await
                 .map_err(|e| {
                     match closed
@@ -252,6 +259,25 @@ pub struct Session {
 /// gone (the PC itself gives up on a silent phone after `SESSION_IDLE_TIMEOUT_MS`). Without this
 /// the phone only noticed after QUIC's ~30 s idle timeout, e.g. after switching Wi-Fi off.
 const PC_SILENT_MS: u64 = SESSION_IDLE_TIMEOUT_MS + 1000;
+/// The PC's first message (Welcome) can take until screen capture is open.
+const WELCOME_TIMEOUT_MS: u64 = CAPTURE_OPEN_TIMEOUT_MS + 5000;
+/// Shortly after a network change, this much silence means the connection went down with the
+/// old network: reconnecting at once beats waiting for the PC's idle timeout (measured on a
+/// phone: Wi-Fi off cost ~6.4 s with the long wait).
+const NET_CHANGE_SILENT_MS: u64 = 2 * HEARTBEAT_INTERVAL_MS + 500;
+/// How long after a network change the short limit applies.
+const NET_CHANGE_WINDOW: Duration = Duration::from_secs(20);
+
+/// Watchdog decision. `last_rx_ms`: when the PC last sent anything (None = nothing yet).
+fn pc_gone(now_ms: u64, last_rx_ms: Option<u64>, net_changed_recently: bool) -> bool {
+    match last_rx_ms {
+        None => now_ms > WELCOME_TIMEOUT_MS,
+        Some(t) => {
+            let silent = now_ms.saturating_sub(t);
+            silent > PC_SILENT_MS || (net_changed_recently && silent > NET_CHANGE_SILENT_MS)
+        }
+    }
+}
 
 impl Drop for Session {
     fn drop(&mut self) {
@@ -267,7 +293,12 @@ fn mono_ms(start: Instant) -> u64 {
 }
 
 impl Session {
-    async fn start(conn: Connection, device_name: &str, params: StreamParams) -> Result<Self> {
+    async fn start(
+        conn: Connection,
+        device_name: &str,
+        params: StreamParams,
+        net_changed: NetChanged,
+    ) -> Result<Self> {
         let (mut send, mut recv) = conn.open_bi().await?;
         let hello = ClientMsg::Hello {
             proto_version: PROTO_VERSION,
@@ -317,7 +348,7 @@ impl Session {
         let reader = tokio::spawn(async move {
             loop {
                 let frame = read_frame::<_, ServerMsg>(&mut recv, MAX_CONTROL_FRAME).await;
-                r_last.store(mono_ms(start), Ordering::Relaxed);
+                r_last.store(mono_ms(start) + 1, Ordering::Relaxed); // 0 = nothing yet
                 match frame {
                     Ok(ServerMsg::Pong { t }) => {
                         r_rtt.store(mono_ms(start).saturating_sub(t), Ordering::Relaxed);
@@ -346,8 +377,15 @@ impl Session {
             let mut tick = tokio::time::interval(Duration::from_millis(250));
             loop {
                 tick.tick().await;
-                if mono_ms(start).saturating_sub(last_rx.load(Ordering::Relaxed)) > PC_SILENT_MS {
-                    tracing::warn!("PC silent for {PC_SILENT_MS} ms; closing the session");
+                let last = last_rx.load(Ordering::Relaxed);
+                let recent = net_changed
+                    .lock()
+                    .expect("net_changed")
+                    .is_some_and(|t| t.elapsed() < NET_CHANGE_WINDOW);
+                if pc_gone(mono_ms(start), last.checked_sub(1), recent) {
+                    tracing::warn!(
+                        "PC not answering (network change: {recent}); closing the session"
+                    );
                     wd_timed_out.store(true, Ordering::SeqCst);
                     wd_closed.store(true, Ordering::SeqCst);
                     wd_conn.close(0u32.into(), b"pc silent");
@@ -484,5 +522,26 @@ impl Session {
         let _ = self.tx.try_send(ClientMsg::Bye);
         let _ = timeout(Duration::from_millis(300), self.conn.closed()).await;
         self.conn.close(0u32.into(), b"");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn watchdog_rules() {
+        // Before the PC's first message it may still be opening screen capture.
+        assert!(!pc_gone(WELCOME_TIMEOUT_MS - 1, None, false));
+        assert!(!pc_gone(WELCOME_TIMEOUT_MS - 1, None, true));
+        assert!(pc_gone(WELCOME_TIMEOUT_MS + 1, None, false));
+        // Normal: give up only after PC_SILENT_MS of silence.
+        assert!(!pc_gone(10_000 + PC_SILENT_MS, Some(10_000), false));
+        assert!(pc_gone(10_001 + PC_SILENT_MS, Some(10_000), false));
+        // Right after a network change, a short silence is enough: the old path is gone.
+        assert!(!pc_gone(10_000 + NET_CHANGE_SILENT_MS, Some(10_000), true));
+        assert!(pc_gone(10_001 + NET_CHANGE_SILENT_MS, Some(10_000), true));
+        // ...but never shorter than a heartbeat round (a healthy session is never cut).
+        const { assert!(NET_CHANGE_SILENT_MS > 2 * HEARTBEAT_INTERVAL_MS) };
     }
 }

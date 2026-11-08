@@ -20,6 +20,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -29,6 +31,8 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -42,6 +46,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.dishus.app.DishusApp
 import uniffi.dishus_core.PcInfo
@@ -64,7 +69,21 @@ fun HomeScreen(app: DishusApp, onConnect: (String) -> Unit) {
     var pasteOpen by remember { mutableStateOf(false) }
     var settingsOpen by remember { mutableStateOf(false) }
     var forget by remember { mutableStateOf<PcInfo?>(null) }
+    // Confirmed but not yet carried out: hidden from the list, undoable for a few seconds.
+    var pendingForget by remember { mutableStateOf<PcInfo?>(null) }
     val scope = rememberCoroutineScope()
+
+    fun commitForget() {
+        val pc = pendingForget ?: return
+        pendingForget = null
+        runCatching { app.core.forgetPc(pc.id); app.persistVault() }
+        pcs = runCatching { app.core.pairedPcs() }.getOrDefault(emptyList())
+    }
+    LaunchedEffect(pendingForget) {
+        if (pendingForget != null) { delay(6_000); commitForget() }
+    }
+    // Leaving the screen (connect, lock) carries out a pending forget rather than dropping it.
+    DisposableEffect(Unit) { onDispose { commitForget() } }
 
     fun pair(link: String) {
         pairing = true; pairError = null
@@ -91,14 +110,15 @@ fun HomeScreen(app: DishusApp, onConnect: (String) -> Unit) {
             TextButton(onClick = { app.lockNow() }) { Text("Lock") }
         }
         Spacer(Modifier.height(12.dp))
-        if (pcs.isEmpty()) {
+        val shown = pcs.filter { it.id != pendingForget?.id }
+        if (shown.isEmpty()) {
             Text(
                 "No PC paired yet. On the PC run `dishus pair`, then scan the QR code it shows.",
                 style = MaterialTheme.typography.bodyMedium,
             )
         }
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            items(pcs, key = { it.id }) { pc ->
+            items(shown, key = { it.id }) { pc ->
                 Card(Modifier.fillMaxWidth().clickable { onConnect(pc.id) }) {
                     Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
@@ -108,11 +128,25 @@ fun HomeScreen(app: DishusApp, onConnect: (String) -> Unit) {
                                 style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace,
                             )
                         }
-                        TextButton(onClick = { forget = pc }) { Text("Forget") }
                         Button(onClick = { onConnect(pc.id) }) { Text("Connect") }
+                        // Forget lives in a menu: it used to sit right next to Connect.
+                        var menu by remember { mutableStateOf(false) }
+                        TextButton(onClick = { menu = true }) { Text("⋮") }
+                        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                            DropdownMenuItem(text = { Text("Forget this PC…") }, onClick = { menu = false; forget = pc })
+                        }
                     }
                 }
             }
+        }
+        pendingForget?.let { pc ->
+            Card(Modifier.fillMaxWidth()) {
+                Row(Modifier.padding(start = 16.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Forgot ${pc.name}.", modifier = Modifier.weight(1f))
+                    TextButton(onClick = { pendingForget = null }) { Text("Undo") }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
         }
         pairError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         Spacer(Modifier.height(8.dp))
@@ -146,8 +180,8 @@ fun HomeScreen(app: DishusApp, onConnect: (String) -> Unit) {
             text = { Text("This phone forgets the PC. To also revoke it on the PC run `dishus revoke`.") },
             confirmButton = {
                 TextButton(onClick = {
-                    runCatching { app.core.forgetPc(pc.id); app.persistVault() }
-                    pcs = runCatching { app.core.pairedPcs() }.getOrDefault(emptyList())
+                    commitForget() // an earlier pending one, if any
+                    pendingForget = pc
                     forget = null
                 }) { Text("Forget") }
             },

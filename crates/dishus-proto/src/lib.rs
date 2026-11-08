@@ -62,6 +62,8 @@ pub const MAX_EXPIRY_DAYS: u16 = 60;
 /// [`SESSION_IDLE_TIMEOUT_MS`] without traffic and releases every key.
 pub const HEARTBEAT_INTERVAL_MS: u64 = 1000;
 pub const SESSION_IDLE_TIMEOUT_MS: u64 = 5000;
+/// The PC opens screen capture (portal, worker) before its Welcome, for at most this long.
+pub const CAPTURE_OPEN_TIMEOUT_MS: u64 = 15_000;
 
 /// Validate a human-readable name: bounded, no control characters.
 pub fn valid_name(s: &str) -> bool {

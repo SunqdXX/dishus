@@ -137,10 +137,15 @@ fn fake_stream() -> anyhow::Result<EncodedStream> {
     }
 }
 
-struct FakeCapture;
+/// Opening capture takes this long (a slow portal / first worker start).
+struct FakeCapture(Duration);
 impl CaptureProvider for FakeCapture {
     fn open(&self) -> BoxFuture<anyhow::Result<Box<dyn CaptureSession>>> {
-        Box::pin(async { Ok(Box::new(FakeCaptureSession) as Box<dyn CaptureSession>) })
+        let d = self.0;
+        Box::pin(async move {
+            tokio::time::sleep(d).await;
+            Ok(Box::new(FakeCaptureSession) as Box<dyn CaptureSession>)
+        })
     }
     fn setup_interactive(&self) -> BoxFuture<anyhow::Result<String>> {
         Box::pin(async { Ok("fake".into()) })
@@ -158,6 +163,10 @@ struct Pc {
 
 impl Pc {
     async fn start() -> Self {
+        Self::start_with(Duration::ZERO).await
+    }
+
+    async fn start_with(capture_open: Duration) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::under(dir.path());
         paths.ensure().unwrap();
@@ -171,7 +180,7 @@ impl Pc {
             cfg,
             DeviceStore::default(),
             TrackedInput::new(Box::new(input.clone())),
-            Arc::new(FakeCapture),
+            Arc::new(FakeCapture(capture_open)),
             Notifier::disabled(),
         ));
         let router = spawn_router(
@@ -514,6 +523,53 @@ async fn silent_phone_times_out_and_keys_release() {
     timeout(Duration::from_secs(6), conn.closed())
         .await
         .expect("silent session should time out");
+}
+
+/// The PC sends nothing until screen capture is open (up to 15 s on a slow portal); the phone
+/// must not take that for a dead PC and loop reconnecting.
+#[tokio::test(flavor = "multi_thread")]
+async fn slow_capture_open_is_not_a_dead_pc() {
+    let pc = Pc::start_with(Duration::from_secs(8)).await;
+    let ph = phone().await;
+    ph.pair(&pc.pairing_link(), "p").await.unwrap();
+    let s = ph
+        .connect(&pc.as_paired(), "phone", StreamParams::default())
+        .await
+        .unwrap();
+    let welcome = timeout(Duration::from_secs(12), s.next_control())
+        .await
+        .expect("no message within 12 s");
+    assert!(
+        matches!(welcome, Some(ServerMsg::Welcome { .. })),
+        "{welcome:?} (timed out: {})",
+        s.timed_out()
+    );
+    s.send(ClientMsg::Key {
+        code: 30,
+        down: true,
+    })
+    .unwrap();
+    s.send(ClientMsg::Key {
+        code: 30,
+        down: false,
+    })
+    .unwrap();
+    wait_for(|| pc.input.log().contains(&"key 30 up".to_string())).await;
+}
+
+/// Android reports network changes often (link properties, a second network appearing): a
+/// session that is still healthy must not be cut by them.
+#[tokio::test(flavor = "multi_thread")]
+async fn network_change_keeps_a_healthy_session() {
+    let pc = Pc::start().await;
+    let ph = phone().await;
+    ph.pair(&pc.pairing_link(), "p").await.unwrap();
+    let s = connect(&ph, &pc.as_paired()).await.unwrap();
+    for _ in 0..6 {
+        ph.network_change().await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    assert!(!s.is_closed() && !s.timed_out(), "healthy session was cut");
 }
 
 /// A frame split across packets with a pause in the middle must not be lost: the session
