@@ -54,15 +54,33 @@ peer-to-peer. No accounts, no cloud service of ours, no port forwarding.
 Design decisions and their reasons are in [docs/PLAN.md](docs/PLAN.md). The threat model is in
 [docs/SECURITY.md](docs/SECURITY.md).
 
-## Install (PC)
+## Quick start (for friends)
 
-Arch: `packaging/aur/PKGBUILD` (`dishus-git`). Its `url`/`source` point at the upstream repo
-(`github.com/dishus/dishus`, a placeholder until the project is published). To build from a local
-checkout instead:
+You need a Linux PC (Wayland with a screen-share portal, or X11) and an Android phone (Android 9 or newer).
+
+1. **Download** both files from the [latest release](https://github.com/SunqdXX/dishus/releases/latest):
+   `dishus-…-linux-x86_64.tar.gz` (PC) and `DiShus-….apk` (phone).
+2. **PC:** unpack and run the installer. It installs for your user only and tells you if anything
+   is missing (GStreamer pieces, keyboard/mouse access).
+   ```sh
+   tar xf dishus-*-linux-x86_64.tar.gz && cd dishus-*-linux-x86_64 && ./install.sh
+   ```
+   The prebuilt PC binaries need glibc ≥ 2.39 (Arch, Ubuntu 24.04+, Debian 13+, Fedora 40+).
+   On older systems, build from source (below).
+3. **Phone:** open the APK to install it (allow "install unknown apps" for your browser or file
+   manager when Android asks). Start DiShus and choose an app password.
+4. **Pair:** on the PC run `dishus pair`, allow screen sharing (tick *remember* / *allow restore
+   token*), then tap **Scan QR** in the app. Done: tap **Connect**.
+
+Works over the internet too (mobile data, other Wi-Fi): no port forwarding, no account, no server
+of ours. The connection is end-to-end encrypted between your phone and your PC.
+
+## Install (PC) from source
+
+Arch: `packaging/aur/PKGBUILD` (`dishus-git`) builds from this repository:
 
 ```sh
 mkdir -p /tmp/dishus-pkg && cp packaging/aur/PKGBUILD /tmp/dishus-pkg/ && cd /tmp/dishus-pkg
-sed -i "s|^source=.*|source=(\"dishus::git+file://$OLDPWD\")|" PKGBUILD
 makepkg -si
 ```
 
@@ -229,6 +247,10 @@ and `x86_64-linux-android`.
 ./android/build-rust.sh          # Rust core for arm64 + x86_64, then Kotlin bindings
 cd android && gradle assembleDebug
 ```
+
+Releases: `packaging/make-release.sh` builds the PC tarball and the signed APK into `dist/`. It
+needs `DISHUS_KEYSTORE_PROPERTIES` pointing at a properties file (`storeFile`, `storePassword`,
+`keyAlias`, `keyPassword`) for the release key, which never goes into the repository.
 
 ## Repository layout
 
