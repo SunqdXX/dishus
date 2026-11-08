@@ -36,6 +36,12 @@ pub struct TickStats {
     pub dropped: u32,
     pub stalled: u32,
     pub peak_inflight: usize,
+    /// Frames handed to the network (for the stats log; not a congestion signal).
+    pub sent: u32,
+    pub keys_sent: u32,
+    pub key_requests: u32,
+    /// The sender's current in-flight limit (0 = unknown: use the LAN default of 4).
+    pub inflight_limit: usize,
 }
 
 #[derive(Debug)]
@@ -69,7 +75,9 @@ impl Abr {
 
     pub fn tick(&mut self, s: TickStats) -> Change {
         let (old_br, old_fps) = (self.bitrate, self.fps);
-        let congested = s.dropped > 0 || s.stalled > 0 || s.peak_inflight >= 3;
+        // Queueing builds up before frames get dropped: near the in-flight limit is congestion.
+        let near_limit = s.inflight_limit.max(4) - 1;
+        let congested = s.dropped > 0 || s.stalled > 0 || s.peak_inflight >= near_limit;
         if congested {
             self.good_ticks = 0;
             self.bitrate = ((self.bitrate as u64 * 7 / 10) as u32).max(self.b.min);

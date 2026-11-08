@@ -8,7 +8,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
@@ -33,8 +33,66 @@ const EXPIRY_CHECK: Duration = Duration::from_secs(15);
 /// Release held input after this long without any message (heartbeats come every second).
 const RELEASE_ON_SILENCE: Duration = Duration::from_millis(2 * HEARTBEAT_INTERVAL_MS + 500);
 const SILENCE_CHECK: Duration = Duration::from_millis(250);
-/// Frames allowed in flight (sent, not yet fully acknowledged) before we start dropping.
-const MAX_INFLIGHT: usize = 4;
+/// While waiting for an IDR, ask the encoder again this often: one request can get lost (e.g.
+/// in the encoder reconfigure a bitrate change causes), and then the picture froze for good.
+const KEY_REREQUEST: Duration = Duration::from_millis(250);
+
+/// Frames allowed in flight (sent, not yet fully acknowledged by the phone) before we drop.
+/// A frame is in flight for about one round trip, so the limit must grow with the RTT: a fixed 4
+/// was fine on a LAN but on mobile data (60 ms RTT, 40 fps) that is the *normal* count, and every
+/// session collapsed to the minimum bitrate and dropped frames.
+pub fn inflight_limit(rtt: Duration, fps: u8) -> usize {
+    let budget_ms = rtt.as_millis() as u64 + 100;
+    let per_rtt = (budget_ms * u64::from(fps.max(1))).div_ceil(1000) as usize;
+    (per_rtt + 2).clamp(4, 32)
+}
+
+/// Gate for "the next frame sent must be an IDR". Drops other frames meanwhile and keeps asking
+/// the encoder until a keyframe actually shows up.
+#[derive(Debug)]
+struct KeyGate {
+    waiting: bool,
+    last_request: Option<Instant>,
+}
+
+impl KeyGate {
+    /// A fresh stream starts with an IDR (the caller has just asked for one).
+    fn new(now: Instant) -> Self {
+        Self {
+            waiting: true,
+            last_request: Some(now),
+        }
+    }
+
+    /// Start waiting; returns true if a keyframe should be requested now.
+    fn require_key(&mut self, now: Instant) -> bool {
+        if self.waiting {
+            return false; // already asked; on_frame repeats it
+        }
+        self.waiting = true;
+        self.last_request = Some(now);
+        true
+    }
+
+    /// For each encoded frame: (may this frame be sent?, request a keyframe now?)
+    fn on_frame(&mut self, keyframe: bool, now: Instant) -> (bool, bool) {
+        if !self.waiting || keyframe {
+            return (true, false);
+        }
+        let due = self
+            .last_request
+            .is_none_or(|t| now.duration_since(t) >= KEY_REREQUEST);
+        if due {
+            self.last_request = Some(now);
+        }
+        (false, due)
+    }
+
+    /// The keyframe went out.
+    fn satisfied(&mut self) {
+        self.waiting = false;
+    }
+}
 /// A frame not delivered within this is reset; the next frame sent is an IDR.
 const FRAME_DEADLINE: Duration = Duration::from_millis(1000);
 
@@ -58,6 +116,14 @@ impl Drop for SessionGuard {
             .notifier
             .notify("DiShus: phone disconnected", &self.name);
     }
+}
+
+fn selected_rtt(conn: &Connection) -> Duration {
+    conn.paths()
+        .iter()
+        .find(|p| p.is_selected())
+        .map(|p| p.rtt())
+        .unwrap_or(Duration::from_millis(100))
 }
 
 fn path_summary(conn: &Connection) -> String {
@@ -331,7 +397,9 @@ struct FrameSender {
     /// Set by a stalled frame task; makes the next pushed frame wait for an IDR.
     need_key: Arc<AtomicBool>,
     stalled: Arc<AtomicU32>,
-    waiting_for_key: bool,
+    key: KeyGate,
+    /// Current in-flight limit (see [`inflight_limit`]); updated every ABR tick.
+    max_inflight: usize,
     stats: TickStats,
 }
 
@@ -344,7 +412,8 @@ impl FrameSender {
             inflight: Arc::new(AtomicUsize::new(0)),
             need_key: Arc::new(AtomicBool::new(false)),
             stalled: Arc::new(AtomicU32::new(0)),
-            waiting_for_key: true, // a fresh stream must start with an IDR
+            key: KeyGate::new(Instant::now()),
+            max_inflight: 4,
             stats: TickStats::default(),
         }
     }
@@ -352,30 +421,37 @@ impl FrameSender {
     fn take_stats(&mut self) -> TickStats {
         let mut s = std::mem::take(&mut self.stats);
         s.stalled = self.stalled.swap(0, Ordering::Relaxed);
+        s.inflight_limit = self.max_inflight;
         s.peak_inflight = s.peak_inflight.max(self.inflight.load(Ordering::Relaxed));
         s
     }
 
     fn push(&mut self, f: VideoFrame, ctl: &dyn StreamControl) {
-        if self.need_key.swap(false, Ordering::AcqRel) {
-            self.waiting_for_key = true;
+        let now = Instant::now();
+        if self.need_key.swap(false, Ordering::AcqRel) && self.key.require_key(now) {
             ctl.force_keyframe();
         }
-        if self.waiting_for_key && !f.keyframe {
+        let (send, ask) = self.key.on_frame(f.keyframe, now);
+        if ask {
+            self.stats.key_requests += 1;
+            ctl.force_keyframe();
+        }
+        if !send {
             self.stats.dropped += 1;
             return;
         }
         let inflight = self.inflight.load(Ordering::Acquire);
         self.stats.peak_inflight = self.stats.peak_inflight.max(inflight);
-        if inflight >= MAX_INFLIGHT {
+        if inflight >= self.max_inflight {
             self.stats.dropped += 1;
-            if !self.waiting_for_key {
-                self.waiting_for_key = true;
+            if self.key.require_key(now) {
                 ctl.force_keyframe();
             }
             return;
         }
-        self.waiting_for_key = false;
+        self.key.satisfied();
+        self.stats.sent += 1;
+        self.stats.keys_sent += u32::from(f.keyframe);
         self.seq += 1;
         let header = VideoHeader {
             seq: self.seq,
@@ -490,6 +566,9 @@ async fn video_task(
             .await;
         let mut sender = FrameSender::new(conn.clone(), params.monitor);
         let mut tick = tokio::time::interval(Duration::from_millis(abr::TICK_MS));
+        // Video health over ~5 s: INFO when frames were dropped or stalled, else DEBUG.
+        let mut window = TickStats::default();
+        let mut window_ticks = 0u32;
         stream.control.force_keyframe();
         loop {
             tokio::select! {
@@ -524,7 +603,38 @@ async fn video_task(
                     }
                 },
                 _ = tick.tick() => {
-                    let ch = abr.tick(sender.take_stats());
+                    sender.max_inflight = inflight_limit(selected_rtt(&conn), abr.fps);
+                    let st = sender.take_stats();
+                    window.sent += st.sent;
+                    window.keys_sent += st.keys_sent;
+                    window.dropped += st.dropped;
+                    window.stalled += st.stalled;
+                    window.peak_inflight = window.peak_inflight.max(st.peak_inflight);
+                    window.key_requests += st.key_requests;
+                    window_ticks += 1;
+                    if window_ticks * abr::TICK_MS as u32 >= 5000 {
+                        let w = std::mem::take(&mut window);
+                        window_ticks = 0;
+                        let msg = format!(
+                            "video: {} frames sent ({} key), {} dropped, {} stalled, {} key requests, \
+                             peak in flight {}/{}, {} kbps, {} fps",
+                            w.sent,
+                            w.keys_sent,
+                            w.dropped,
+                            w.stalled,
+                            w.key_requests,
+                            w.peak_inflight,
+                            sender.max_inflight,
+                            abr.bitrate,
+                            abr.fps
+                        );
+                        if w.dropped > 0 || w.stalled > 0 {
+                            tracing::info!("{msg}");
+                        } else {
+                            tracing::debug!("{msg}");
+                        }
+                    }
+                    let ch = abr.tick(st);
                     if let Some(b) = ch.bitrate {
                         stream.control.set_bitrate(b);
                     }
@@ -535,5 +645,45 @@ async fn video_task(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inflight_limit_grows_with_rtt() {
+        let ms = Duration::from_millis;
+        assert_eq!(inflight_limit(ms(3), 30), 6); // LAN
+        assert_eq!(inflight_limit(ms(60), 40), 9); // mobile data, measured on a phone
+        assert_eq!(inflight_limit(ms(300), 60), 26); // far relay
+        assert_eq!(inflight_limit(ms(5000), 60), 32); // capped
+        assert_eq!(inflight_limit(ms(0), 1), 4); // floor
+    }
+
+    #[test]
+    fn key_gate_rerequests_until_a_keyframe_arrives() {
+        let t0 = Instant::now();
+        let at = |ms| t0 + Duration::from_millis(ms);
+        let mut g = KeyGate::new(t0);
+        // fresh stream: drops non-key frames, re-asks every KEY_REREQUEST
+        assert_eq!(g.on_frame(false, at(10)), (false, false));
+        assert_eq!(
+            g.on_frame(false, at(260)),
+            (false, true),
+            "first request was lost"
+        );
+        assert_eq!(g.on_frame(false, at(300)), (false, false));
+        assert_eq!(g.on_frame(false, at(520)), (false, true), "and again");
+        // the keyframe arrives and is sent
+        assert_eq!(g.on_frame(true, at(530)), (true, false));
+        g.satisfied();
+        assert_eq!(g.on_frame(false, at(560)), (true, false));
+        // congestion: one immediate request, no duplicate while already waiting
+        assert!(g.require_key(at(600)));
+        assert!(!g.require_key(at(610)));
+        assert_eq!(g.on_frame(false, at(700)), (false, false));
+        assert_eq!(g.on_frame(false, at(860)), (false, true));
     }
 }
