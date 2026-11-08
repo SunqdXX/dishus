@@ -7,6 +7,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -24,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.text.font.FontWeight
@@ -93,12 +95,31 @@ private fun KeyCap(k: Key, mod: ModState?, shiftOn: Boolean, haptics: Boolean, c
         contentAlignment = Alignment.Center,
     ) {
         val label = if (shiftOn && k.shiftLabel != null) k.shiftLabel else k.label
+        KeyLabel(label, mod == ModState.LOCKED, isMod)
+    }
+}
+
+/**
+ * A key is a fixed-size box, so its label must fit it: honour the system font scale when there
+ * is room, shrink when there isn't (at font scale 1.3 on a narrow cover screen, "F10"/"F11"/"F12"
+ * were all clipped to "F1").
+ */
+@Composable
+private fun KeyLabel(label: String, locked: Boolean, isMod: Boolean) {
+    BoxWithConstraints(contentAlignment = Alignment.Center) {
+        val density = LocalDensity.current
+        val wanted = with(density) { (if (label.length > 3) 11.sp else 15.sp).toPx() }
+        // ~0.62 em per glyph is a safe average for the default sans font, caps included.
+        val fitW = with(density) { (maxWidth - 4.dp).toPx() } / (label.length.coerceAtLeast(1) * 0.62f)
+        val fitH = with(density) { maxHeight.toPx() } * 0.6f
+        val px = minOf(wanted, fitW, fitH).coerceAtLeast(1f)
         Text(
             label,
-            color = if (mod == ModState.LOCKED) Color(0xFF07130D) else Color(0xFFE6EBEF),
-            fontSize = if (label.length > 3) 10.sp else 14.sp,
+            color = if (locked) Color(0xFF07130D) else Color(0xFFE6EBEF),
+            fontSize = with(density) { px.toSp() },
             fontWeight = if (isMod) FontWeight.SemiBold else FontWeight.Normal,
             maxLines = 1,
+            softWrap = false,
         )
     }
 }
