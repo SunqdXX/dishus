@@ -1,15 +1,20 @@
 //! `dishus` — control the DiShus daemon.
 
+#[cfg(not(windows))]
 use std::{
     io::Write,
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
+};
+use std::{
     path::PathBuf,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use tokio::{net::UnixStream, time::timeout};
+#[cfg(not(windows))]
+use tokio::net::UnixStream;
+use tokio::time::timeout;
 
 use dishus_proto::{
     DEFAULT_EXPIRY_DAYS, MAX_EXPIRY_DAYS,
@@ -61,9 +66,10 @@ enum Cmd {
 /// `dishus doctor` runs `dishus-daemon --doctor`, preferring the daemon installed next to this
 /// binary (the tarball and `cargo install` put them together), then PATH.
 fn doctor() -> Result<()> {
+    let name = format!("dishus-daemon{}", std::env::consts::EXE_SUFFIX);
     let sibling = std::env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(|d| d.join("dishus-daemon")))
+        .and_then(|p| p.parent().map(|d| d.join(&name)))
         .filter(|p| p.is_file());
     let daemon = sibling.unwrap_or_else(|| PathBuf::from("dishus-daemon"));
     let status = std::process::Command::new(&daemon)
@@ -73,11 +79,37 @@ fn doctor() -> Result<()> {
     std::process::exit(status.code().unwrap_or(1));
 }
 
+#[cfg(not(windows))]
 fn runtime_socket() -> Result<PathBuf> {
     let rt = std::env::var_os("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR not set")?;
     Ok(PathBuf::from(rt).join("dishus/control.sock"))
 }
 
+/// How to start the daemon, for error messages.
+#[cfg(not(windows))]
+const START_HINT: &str = "systemctl --user start dishus";
+#[cfg(windows)]
+const START_HINT: &str = "dishus-daemon (or sign out and in again)";
+
+#[cfg(windows)]
+fn devices_file() -> Result<PathBuf> {
+    Ok(dishus_win::config_dir()?.join("devices.toml"))
+}
+
+#[cfg(windows)]
+fn lockdown_file() -> Result<PathBuf> {
+    Ok(dishus_win::state_dir()?.join("lockdown"))
+}
+
+/// Same file and protection the daemon uses; the daemon only checks that it exists.
+#[cfg(windows)]
+fn write_lockdown_offline() -> Result<PathBuf> {
+    let f = lockdown_file()?;
+    dishus_win::write_private(&f, b"locked by `dishus kill` (offline)\n")?;
+    Ok(f)
+}
+
+#[cfg(not(windows))]
 fn devices_file() -> Result<PathBuf> {
     let base = match std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
         Some(v) => PathBuf::from(v),
@@ -88,6 +120,7 @@ fn devices_file() -> Result<PathBuf> {
 
 /// Same path the daemon uses (`$XDG_STATE_HOME/dishus/lockdown`); the daemon only checks that
 /// it exists, so the CLI can enforce lockdown even when the daemon is hung or stopped.
+#[cfg(not(windows))]
 fn lockdown_file() -> Result<PathBuf> {
     let base = match std::env::var_os("XDG_STATE_HOME").filter(|v| !v.is_empty()) {
         Some(v) => PathBuf::from(v),
@@ -98,6 +131,7 @@ fn lockdown_file() -> Result<PathBuf> {
     Ok(base.join("dishus/lockdown"))
 }
 
+#[cfg(not(windows))]
 fn write_lockdown_offline() -> Result<PathBuf> {
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
     let f = lockdown_file()?;
@@ -117,14 +151,51 @@ fn write_lockdown_offline() -> Result<PathBuf> {
     Ok(f)
 }
 
-async fn call(req: IpcRequest, wait: Duration) -> Result<IpcResponse> {
+#[cfg(not(windows))]
+async fn connect() -> Result<UnixStream> {
     let path = runtime_socket()?;
-    let mut s = UnixStream::connect(&path).await.with_context(|| {
+    UnixStream::connect(&path).await.with_context(|| {
         format!(
-            "daemon not running? ({}). Try: systemctl --user start dishus",
+            "daemon not running? ({}). Try: {START_HINT}",
             path.display()
         )
-    })?;
+    })
+}
+
+/// The daemon's control pipe. Refuses a pipe served by another account (pipe names are
+/// machine-wide, so someone could squat on ours before the daemon starts).
+#[cfg(windows)]
+async fn connect() -> Result<tokio::net::windows::named_pipe::NamedPipeClient> {
+    use tokio::net::windows::named_pipe::ClientOptions;
+    const ERROR_PIPE_BUSY: i32 = 231;
+    let name = dishus_win::pipe_name()?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    let pipe = loop {
+        match ClientOptions::new().open(&name) {
+            Ok(p) => break p,
+            // All instances busy for a moment (another `dishus` call): wait for one.
+            Err(e)
+                if e.raw_os_error() == Some(ERROR_PIPE_BUSY)
+                    && std::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(e) => {
+                return Err(e)
+                    .with_context(|| format!("daemon not running? ({name}). Try: {START_HINT}"));
+            }
+        }
+    };
+    let me = dishus_win::current_user_sid()?;
+    match dishus_win::pipe_server_sid(&pipe) {
+        Ok(sid) if sid == me => Ok(pipe),
+        Ok(sid) => bail!("{name} is served by another account ({sid}); refusing to use it"),
+        Err(e) => bail!("cannot verify who serves {name}: {e}"),
+    }
+}
+
+async fn call(req: IpcRequest, wait: Duration) -> Result<IpcResponse> {
+    let mut s = connect().await?;
     write_frame(&mut s, &req, MAX_IPC_FRAME).await?;
     let resp: IpcResponse = timeout(wait, read_frame(&mut s, MAX_IPC_FRAME))
         .await
@@ -133,6 +204,44 @@ async fn call(req: IpcRequest, wait: Duration) -> Result<IpcResponse> {
         bail!("{e}");
     }
     Ok(resp)
+}
+
+/// What `dishus pair` step 1 and `dishus setup-capture` say first.
+#[cfg(not(windows))]
+const SETUP_TEXT: [&str; 2] = [
+    "Step 1/2: screen-capture permission. A dialog should appear on this PC:\n          select ALL monitors and allow it to be remembered.",
+    "A screen-share dialog should appear on this PC. Select ALL monitors and allow it to be remembered.",
+];
+/// Windows asks no permission for screen capture; the step only checks that it works.
+#[cfg(windows)]
+const SETUP_TEXT: [&str; 2] = [
+    "Step 1/2: checking screen capture (Windows shows no dialog for it).",
+    "Checking screen capture (Windows shows no dialog for it).",
+];
+
+#[cfg(not(windows))]
+const STOP_DESC: &str = "`systemctl --user stop dishus`";
+#[cfg(not(windows))]
+fn stop_daemon() -> std::io::Result<std::process::ExitStatus> {
+    std::process::Command::new("systemctl")
+        .args(["--user", "stop", "dishus.service"])
+        .status()
+}
+
+/// End this user's daemon (and its capture worker). taskkill only ends processes the caller
+/// may end, and the filter keeps it to this account's processes anyway.
+#[cfg(windows)]
+const STOP_DESC: &str = "`taskkill /F /IM dishus-daemon.exe` (this user's only)";
+#[cfg(windows)]
+fn stop_daemon() -> std::io::Result<std::process::ExitStatus> {
+    let user = format!(
+        "USERNAME eq {}\\{}",
+        std::env::var("USERDOMAIN").unwrap_or_default(),
+        std::env::var("USERNAME").unwrap_or_default()
+    );
+    std::process::Command::new("taskkill")
+        .args(["/F", "/T", "/FI", &user, "/IM", "dishus-daemon.exe"])
+        .status()
 }
 
 fn now() -> u64 {
@@ -244,17 +353,22 @@ fn offline_revoke(sel: &str) -> Result<String> {
         _ => bail!("'{sel}' is ambiguous"),
     };
     let removed = arr.remove(idx);
-    let tmp = path.with_extension("toml.tmp");
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&tmp)?;
-    f.write_all(toml::to_string_pretty(&v)?.as_bytes())?;
-    f.sync_all()?;
-    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
-    std::fs::rename(&tmp, &path)?;
+    #[cfg(windows)]
+    dishus_win::write_private(&path, toml::to_string_pretty(&v)?.as_bytes())?;
+    #[cfg(not(windows))]
+    {
+        let tmp = path.with_extension("toml.tmp");
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        f.write_all(toml::to_string_pretty(&v)?.as_bytes())?;
+        f.sync_all()?;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+        std::fs::rename(&tmp, &path)?;
+    }
     Ok(removed
         .get("name")
         .and_then(|x| x.as_str())
@@ -369,14 +483,12 @@ async fn main() -> Result<()> {
                 eprintln!("kill via daemon failed: {e:#}\nStopping the service instead.");
                 // Persist lockdown first so a restart (or reboot) of the daemon stays locked.
                 let lock = write_lockdown_offline();
-                let st = std::process::Command::new("systemctl")
-                    .args(["--user", "stop", "dishus.service"])
-                    .status();
+                let st = stop_daemon();
                 match &lock {
                     Ok(p) => eprintln!("lockdown flag written: {}", p.display()),
                     Err(e) => eprintln!("could not write lockdown flag: {e:#}"),
                 }
-                bail!("daemon unreachable; `systemctl --user stop dishus` -> {st:?}");
+                bail!("daemon unreachable; {STOP_DESC} -> {st:?}");
             }
         },
         Cmd::Unlock => match call(IpcRequest::Unlock, short).await {
@@ -395,9 +507,7 @@ async fn main() -> Result<()> {
         },
         Cmd::Doctor => doctor()?,
         Cmd::SetupCapture => {
-            println!(
-                "A screen-share dialog should appear on this PC. Select ALL monitors and allow it to be remembered."
-            );
+            println!("{}", SETUP_TEXT[1]);
             match call(IpcRequest::SetupCapture, Duration::from_secs(180)).await? {
                 IpcResponse::Ok(m) => println!("{m}"),
                 r => bail!("unexpected reply {r:?}"),
@@ -405,8 +515,7 @@ async fn main() -> Result<()> {
         }
         Cmd::Pair { skip_capture_setup } => {
             if !skip_capture_setup {
-                println!("Step 1/2: screen-capture permission. A dialog should appear on this PC:");
-                println!("          select ALL monitors and allow it to be remembered.");
+                println!("{}", SETUP_TEXT[0]);
                 match call(IpcRequest::SetupCapture, Duration::from_secs(180)).await {
                     Ok(IpcResponse::Ok(m)) => println!("          ✓ {m}"),
                     Ok(_) => {}
