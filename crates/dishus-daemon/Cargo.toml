@@ -14,11 +14,14 @@ name = "dishus-daemon"
 path = "src/main.rs"
 
 [features]
-default = ["capture", "uinput"]
-# Screen capture + encode via xdg-desktop-portal / PipeWire / GStreamer.
+default = ["capture", "uinput", "sendinput"]
+# Screen capture + encode. Linux: xdg-desktop-portal / PipeWire / GStreamer.
+# Windows: DXGI Desktop Duplication + Media Foundation (part of Windows, nothing to install).
 capture = ["dep:ashpd", "dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
-# Virtual keyboard/mouse through /dev/uinput.
+# Virtual keyboard/mouse through /dev/uinput (Linux).
 uinput = ["dep:evdev"]
+# Keyboard/mouse through SendInput (Windows; no effect elsewhere).
+sendinput = []
 
 [dependencies]
 dishus-proto.workspace = true
@@ -35,15 +38,46 @@ zeroize.workspace = true
 data-encoding.workspace = true
 bytes.workspace = true
 getrandom = "0.4"
-rustix = { version = "1", features = ["process", "system", "fs"] }
-zbus = { version = "6", default-features = false, features = ["tokio"] }
 n0-future = "0.3"
 
+[target.'cfg(not(windows))'.dependencies]
+rustix = { version = "1", features = ["process", "system", "fs"] }
+zbus = { version = "6", default-features = false, features = ["tokio"] }
 ashpd = { version = "0.14", default-features = false, features = ["tokio", "screencast"], optional = true }
 gstreamer = { version = "0.25", optional = true }
 gstreamer-app = { version = "0.25", optional = true }
 gstreamer-video = { version = "0.25", optional = true }
 evdev = { version = "0.13", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Threading",
+  "Win32_System_Pipes",
+  "Win32_System_Memory",
+  "Win32_System_Console",
+  "Win32_System_Com",
+  "Win32_System_Registry",
+  "Win32_System_SystemInformation",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Variant",
+  "Win32_UI_HiDpi",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_Graphics_Gdi",
+  "Win32_Graphics_Dxgi",
+  "Win32_Graphics_Dxgi_Common",
+  "Win32_Graphics_Direct3D",
+  "Win32_Graphics_Direct3D11",
+  "Win32_Media_MediaFoundation",
+  "Win32_Media_DirectShow",
+  "Data_Xml_Dom",
+  "UI_Notifications",
+] }
+dishus-win.workspace = true
 
 [dev-dependencies]
 dishus-core = { path = "../dishus-core", version = "0.1.0" }

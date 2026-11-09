@@ -6,7 +6,10 @@ pub mod backend;
 pub mod capture;
 pub mod config;
 pub mod devices;
-#[cfg(feature = "capture")]
+#[cfg(all(feature = "capture", not(windows)))]
+pub mod doctor;
+#[cfg(all(feature = "capture", windows))]
+#[path = "doctor_win.rs"]
 pub mod doctor;
 pub mod gate;
 pub mod identity;
@@ -18,5 +21,10 @@ pub mod paths;
 pub mod session;
 pub mod state;
 
-#[cfg(feature = "uinput")]
+#[cfg(all(feature = "uinput", not(windows)))]
 pub mod input;
+#[cfg(all(feature = "sendinput", windows))]
+#[path = "input_win.rs"]
+pub mod input;
+#[cfg(windows)]
+pub mod winsys;

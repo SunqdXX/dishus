@@ -25,9 +25,39 @@ use crate::backend::{
 pub struct WorkerProvider {
     exe: PathBuf,
     env: Vec<(String, String)>,
+    /// Windows: the daemon log, which the worker's stderr appends to (there is no journal and
+    /// the daemon itself has no stderr).
+    #[cfg(windows)]
+    log: Option<PathBuf>,
 }
 
 impl WorkerProvider {
+    #[cfg(windows)]
+    pub fn with_log(mut self, log: PathBuf) -> Self {
+        self.log = Some(log);
+        self
+    }
+
+    #[cfg(windows)]
+    fn stderr(&self) -> Stdio {
+        self.log
+            .as_ref()
+            .and_then(|p| {
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(p)
+                    .ok()
+            })
+            .map(Stdio::from)
+            .unwrap_or_else(Stdio::null)
+    }
+
+    #[cfg(not(windows))]
+    fn stderr(&self) -> Stdio {
+        Stdio::inherit()
+    }
+
     pub fn new(token_file: PathBuf, encoder_pref: &str, show_cursor: bool) -> Result<Self> {
         let exe = std::env::current_exe().context("locating own executable")?;
         Ok(Self {
@@ -43,6 +73,8 @@ impl WorkerProvider {
                     if show_cursor { "1" } else { "0" }.into(),
                 ),
             ],
+            #[cfg(windows)]
+            log: None,
         })
     }
 
@@ -53,8 +85,10 @@ impl WorkerProvider {
             .envs(self.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(self.stderr())
             .kill_on_drop(true);
+        #[cfg(windows)]
+        c.creation_flags(crate::winsys::CREATE_NO_WINDOW);
         c.spawn().context("spawning capture worker")
     }
 

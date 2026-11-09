@@ -1,4 +1,6 @@
-//! `dishus-daemon`: runs as a systemd user service.
+//! `dishus-daemon`: runs as a systemd user service (Linux), or as a per-user background program
+//! started at log-on (Windows; no console window, logs in `%LOCALAPPDATA%\dishus\logs`).
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
 use std::sync::Arc;
 
@@ -49,7 +51,16 @@ fn make_input() -> (Box<dyn InputSink>, Status, bool) {
             Err(e) => tracing::error!("DISHUS_INPUT record file {}: {e}", path.display()),
         }
     }
-    #[cfg(feature = "uinput")]
+    #[cfg(all(feature = "sendinput", windows))]
+    {
+        // SendInput needs no device; "retrying" only matters for uinput.
+        return (
+            Box::new(dishus_daemon::input::SendInputSink::new()),
+            fixed("SendInput".into()),
+            false,
+        );
+    }
+    #[cfg(all(feature = "uinput", not(windows)))]
     {
         // Retry: at boot logind may grant /dev/uinput a moment after this service starts.
         let r = dishus_daemon::backend::RetryingInput::new(
@@ -64,9 +75,31 @@ fn make_input() -> (Box<dyn InputSink>, Status, bool) {
     #[allow(unreachable_code)]
     (
         Box::new(NullInput),
-        fixed("disabled (built without uinput)".into()),
+        fixed(if cfg!(windows) {
+            "disabled (built without sendinput)".into()
+        } else {
+            "disabled (built without uinput)".into()
+        }),
         false,
     )
+}
+
+/// Windows: the daemon log, `%LOCALAPPDATA%\dishus\logs\daemon.log` (rotated at 5 MB, one
+/// old file kept). The capture worker appends to the same file through its stderr.
+#[cfg(windows)]
+fn open_log(paths: &Paths) -> Result<(std::fs::File, std::path::PathBuf)> {
+    let dir = paths.log_dir();
+    dishus_daemon::paths::private_dir(&dir)?;
+    let file = dir.join("daemon.log");
+    if std::fs::metadata(&file).is_ok_and(|m| m.len() > 5 * 1024 * 1024) {
+        let _ = std::fs::rename(&file, dir.join("daemon.log.1"));
+    }
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&file)
+        .with_context(|| format!("opening {}", file.display()))?;
+    Ok((f, file))
 }
 
 fn make_capture(
@@ -78,6 +111,9 @@ fn make_capture(
         &cfg.video.encoder,
         cfg.video.show_cursor,
     ) {
+        #[cfg(windows)]
+        Ok(w) => Some(w.with_log(paths.log_dir().join("daemon.log"))),
+        #[cfg(not(windows))]
         Ok(w) => Some(w),
         Err(e) => {
             tracing::error!("capture disabled: {e:#}");
@@ -112,7 +148,16 @@ async fn capture_worker(_mode: &str) -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    #[cfg(windows)]
+    dishus_daemon::winsys::set_dpi_aware();
     let mut args = std::env::args().skip(1);
+    #[cfg(windows)]
+    if matches!(
+        std::env::args().nth(1).as_deref(),
+        Some("--version" | "-V" | "--doctor" | "--help" | "-h")
+    ) {
+        dishus_daemon::winsys::attach_parent_console();
+    }
     if let Some(a) = args.next() {
         match a.as_str() {
             "--version" | "-V" => {
@@ -129,6 +174,7 @@ async fn main() -> Result<()> {
                 }
             }
             "--capture-worker" => {
+                #[cfg(not(windows))]
                 rustix::process::umask(rustix::fs::Mode::from_raw_mode(0o077));
                 let mode = args.next().unwrap_or_default();
                 return capture_worker(&mode).await;
@@ -136,19 +182,33 @@ async fn main() -> Result<()> {
             _ => usage(),
         }
     }
+    let filter = || {
+        EnvFilter::try_from_env("DISHUS_LOG")
+            .unwrap_or_else(|_| EnvFilter::new("info,iroh=warn,noq=warn,noq_proto=warn"))
+    };
+    #[cfg(not(windows))]
     tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_env("DISHUS_LOG")
-                .unwrap_or_else(|_| EnvFilter::new("info,iroh=warn,noq=warn,noq_proto=warn")),
-        )
+        .with_env_filter(filter())
         .with_target(false)
         .init();
 
     // Nothing we create should be readable by others.
+    #[cfg(not(windows))]
     rustix::process::umask(rustix::fs::Mode::from_raw_mode(0o077));
 
     let paths = Paths::from_env()?;
     paths.ensure()?;
+    #[cfg(windows)]
+    {
+        let (log, _) = open_log(&paths)?;
+        tracing_subscriber::fmt()
+            .with_env_filter(filter())
+            .with_target(false)
+            .with_ansi(false)
+            .with_writer(std::sync::Mutex::new(log))
+            .init();
+        tracing::info!("dishus-daemon {} starting", env!("CARGO_PKG_VERSION"));
+    }
     // Before touching any state: a previous instance may still be shutting down (restart),
     // and two daemons must never share the control socket or write devices.toml together.
     let _instance = paths.lock_instance(std::time::Duration::from_secs(10))?;
@@ -198,6 +258,13 @@ async fn main() -> Result<()> {
     if let Some(w) = worker {
         let ctx2 = ctx.clone();
         tokio::spawn(async move {
+            // Hybrid-graphics laptops: make sure capture runs on the GPU showing the screen.
+            #[cfg(all(windows, feature = "capture"))]
+            if let Ok(Err(e)) =
+                tokio::task::spawn_blocking(dishus_daemon::capture::win::gpupref::ensure).await
+            {
+                tracing::warn!("screen capture check: {e:#}");
+            }
             let d = w.probe().await;
             tracing::info!("capture: {d}");
             *ctx2.capture_backend.write().expect("capture desc") = d;
@@ -205,10 +272,16 @@ async fn main() -> Result<()> {
     }
     let ipc_task = tokio::spawn(ipc::serve(ctx));
 
+    #[cfg(not(windows))]
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    #[cfg(not(windows))]
+    let terminate = term.recv();
+    // Windows: no SIGTERM. Log-off ends the process; `dishus kill` falls back to taskkill.
+    #[cfg(windows)]
+    let terminate = std::future::pending::<Option<()>>();
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {},
-        _ = term.recv() => {},
+        _ = terminate => {},
         r = ipc_task => {
             match r {
                 Ok(Err(e)) => tracing::error!("control socket failed: {e:#}"),
@@ -221,6 +294,7 @@ async fn main() -> Result<()> {
     state.end_all_sessions(dishus_proto::ByeReason::Normal);
     state.release_input();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), router.shutdown()).await;
+    #[cfg(not(windows))]
     let _ = std::fs::remove_file(state.paths.socket());
     Ok(())
 }

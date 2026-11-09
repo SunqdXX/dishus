@@ -1,0 +1,4 @@
+# Windows: link the C runtime statically, so the exes run on a fresh Windows without the
+# Visual C++ Redistributable (the release zip must need nothing else installed).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

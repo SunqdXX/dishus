@@ -1,10 +1,17 @@
-//! Local control socket for the `dishus` CLI.
+//! Local control socket for the `dishus` CLI (a named pipe on Windows).
 
-use std::{os::unix::fs::PermissionsExt, sync::Arc, time::Duration};
+#[cfg(not(windows))]
+use std::os::unix::fs::PermissionsExt;
+use std::{sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use iroh::Endpoint;
-use tokio::{net::UnixListener, time::timeout};
+#[cfg(not(windows))]
+use tokio::net::UnixListener;
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    time::timeout,
+};
 
 use dishus_proto::{
     PairingInfo,
@@ -22,6 +29,7 @@ pub struct IpcContext {
     pub input_backend: std::sync::Arc<std::sync::Mutex<String>>,
 }
 
+#[cfg(not(windows))]
 pub async fn serve(ctx: Arc<IpcContext>) -> Result<()> {
     let path = ctx.state.paths.socket();
     // We hold the single-instance lock (main.rs), so any socket file here is stale.
@@ -33,7 +41,7 @@ pub async fn serve(ctx: Arc<IpcContext>) -> Result<()> {
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
     let my_uid = rustix::process::getuid().as_raw();
     loop {
-        let (mut stream, _) = listener.accept().await?;
+        let (stream, _) = listener.accept().await?;
         match stream.peer_cred() {
             Ok(c) if c.uid() == my_uid => {}
             other => {
@@ -41,24 +49,55 @@ pub async fn serve(ctx: Arc<IpcContext>) -> Result<()> {
                 continue;
             }
         }
-        let ctx = ctx.clone();
-        tokio::spawn(async move {
-            let res: Result<()> = async {
-                let req: IpcRequest = timeout(
-                    Duration::from_secs(5),
-                    read_frame(&mut stream, MAX_IPC_FRAME),
-                )
-                .await??;
-                let resp = handle(&ctx, req).await;
-                write_frame(&mut stream, &resp, MAX_IPC_FRAME).await?;
-                Ok(())
-            }
-            .await;
-            if let Err(e) = res {
-                tracing::debug!("ipc: {e:#}");
-            }
-        });
+        spawn_client(ctx.clone(), stream);
     }
+}
+
+/// Windows: a named pipe whose DACL only admits the current user, and whose clients' process
+/// SID is checked again on connect (the counterpart of the uid check above).
+#[cfg(windows)]
+pub async fn serve(ctx: Arc<IpcContext>) -> Result<()> {
+    let name = dishus_win::pipe_name()?;
+    let my_sid = dishus_win::current_user_sid()?;
+    // First instance: fails if anyone else already holds this name.
+    let mut server = dishus_win::create_pipe_server(&name, true)
+        .with_context(|| format!("creating control pipe {name}"))?;
+    loop {
+        server.connect().await?;
+        let stream = server;
+        server = dishus_win::create_pipe_server(&name, false)
+            .with_context(|| format!("creating control pipe {name}"))?;
+        match dishus_win::pipe_client_sid(&stream) {
+            Ok(sid) if sid == my_sid => {}
+            other => {
+                tracing::warn!("rejected control-pipe client: {other:?}");
+                continue;
+            }
+        }
+        spawn_client(ctx.clone(), stream);
+    }
+}
+
+fn spawn_client<S>(ctx: Arc<IpcContext>, mut stream: S)
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        let res: Result<()> = async {
+            let req: IpcRequest = timeout(
+                Duration::from_secs(5),
+                read_frame(&mut stream, MAX_IPC_FRAME),
+            )
+            .await??;
+            let resp = handle(&ctx, req).await;
+            write_frame(&mut stream, &resp, MAX_IPC_FRAME).await?;
+            Ok(())
+        }
+        .await;
+        if let Err(e) = res {
+            tracing::debug!("ipc: {e:#}");
+        }
+    });
 }
 
 fn err(e: impl std::fmt::Display) -> IpcResponse {

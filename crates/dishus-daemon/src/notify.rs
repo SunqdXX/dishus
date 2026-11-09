@@ -1,6 +1,8 @@
-//! Desktop notifications (org.freedesktop.Notifications over D-Bus). Fire-and-forget: a
-//! missing notification daemon must never break a session. Everything is also logged.
+//! Desktop notifications (org.freedesktop.Notifications over D-Bus; toasts on Windows).
+//! Fire-and-forget: a missing notification daemon must never break a session. Everything is
+//! also logged.
 
+#[cfg(not(windows))]
 use std::collections::HashMap;
 
 use tokio::sync::mpsc;
@@ -15,7 +17,33 @@ impl Notifier {
         Self { tx: None }
     }
 
+    /// Spawn the background sender: a thread showing Windows toasts.
+    #[cfg(windows)]
+    pub fn spawn() -> Self {
+        let (tx, mut rx) = mpsc::channel::<(String, String)>(32);
+        let spawned = std::thread::Builder::new()
+            .name("toasts".into())
+            .spawn(move || {
+                if let Err(e) = crate::winsys::register_toast_app() {
+                    tracing::debug!("registering notification sender: {e}");
+                }
+                while let Some((summary, body)) = rx.blocking_recv() {
+                    if let Err(e) = crate::winsys::toast(&summary, &body) {
+                        tracing::debug!("notification failed: {e}");
+                    }
+                }
+            });
+        match spawned {
+            Ok(_) => Self { tx: Some(tx) },
+            Err(e) => {
+                tracing::warn!("notifications disabled: {e}");
+                Self::disabled()
+            }
+        }
+    }
+
     /// Spawn the background sender. Must be called inside a tokio runtime.
+    #[cfg(not(windows))]
     pub fn spawn() -> Self {
         let (tx, mut rx) = mpsc::channel::<(String, String)>(32);
         tokio::spawn(async move {

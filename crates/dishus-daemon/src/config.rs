@@ -27,10 +27,18 @@ pub struct Config {
     pub video: VideoConfig,
 }
 
+/// Accepted `video.encoder` values.
+#[cfg(not(windows))]
+pub const ENCODERS: &[&str] = &["auto", "nvenc", "vaapi", "vaapi-lp", "x264", "openh264"];
+/// Accepted `video.encoder` values: Media Foundation encoders by GPU maker, any GPU, or the CPU.
+#[cfg(windows)]
+pub const ENCODERS: &[&str] = &["auto", "nvenc", "qsv", "amf", "hardware", "software"];
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct VideoConfig {
-    /// "auto", "nvenc", "vaapi" (either VA-API entry point), "vaapi-lp", "x264", "openh264"
+    /// "auto", "nvenc", "vaapi" (either VA-API entry point), "vaapi-lp", "x264", "openh264".
+    /// Windows: "auto", "nvenc", "qsv", "amf", "hardware", "software".
     pub encoder: String,
     /// Absolute ceiling for the adaptive bitrate controller (kbit/s).
     pub max_bitrate_kbps: u32,
@@ -62,6 +70,18 @@ impl Default for Config {
     }
 }
 
+/// The computer name (what Windows shows in Settings → System → About).
+#[cfg(windows)]
+pub fn hostname() -> String {
+    let raw = std::env::var("COMPUTERNAME").unwrap_or_default();
+    let mut s: String = raw.chars().filter(|c| !c.is_control()).take(64).collect();
+    if s.is_empty() || !valid_name(&s) {
+        s = "Windows PC".into();
+    }
+    s
+}
+
+#[cfg(not(windows))]
 pub fn hostname() -> String {
     let raw = std::fs::read_to_string("/etc/hostname")
         .ok()
@@ -97,10 +117,8 @@ impl Config {
                 bail!("relay url must be http(s): {r}");
             }
         }
-        if !["auto", "nvenc", "vaapi", "vaapi-lp", "x264", "openh264"]
-            .contains(&self.video.encoder.as_str())
-        {
-            bail!("video.encoder must be one of auto, nvenc, vaapi, vaapi-lp, x264, openh264");
+        if !ENCODERS.contains(&self.video.encoder.as_str()) {
+            bail!("video.encoder must be one of {}", ENCODERS.join(", "));
         }
         if !(300..=200_000).contains(&self.video.max_bitrate_kbps) {
             bail!("video.max_bitrate_kbps must be within 300..=200000");
