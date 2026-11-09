@@ -29,9 +29,10 @@ use windows::{
                 ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
                 GetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT, SetNamedSecurityInfoW,
             },
-            DACL_SECURITY_INFORMATION, GetAce, GetSecurityDescriptorDacl, GetTokenInformation,
-            INHERIT_ONLY_ACE, OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
-            PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
+            DACL_SECURITY_INFORMATION, GetAce, GetSecurityDescriptorDacl,
+            GetSecurityDescriptorOwner, GetTokenInformation, INHERIT_ONLY_ACE,
+            OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+            PSID, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
         },
         System::{
             Pipes::{GetNamedPipeClientProcessId, GetNamedPipeServerProcessId},
@@ -144,10 +145,15 @@ impl SecurityDescriptor {
         Ok(Self(sd))
     }
 
-    /// Full control for the current user only, inherited by everything created inside, and
-    /// nothing inherited from the parent (`P` = protected).
+    /// Owned by the current user, full control for the current user only, inherited by
+    /// everything created inside, and nothing inherited from the parent (`P` = protected).
+    ///
+    /// The owner is explicit because Windows' default owner is not always the user: files an
+    /// elevated administrator creates are owned by BUILTIN\Administrators, which
+    /// [`check_private`] would then refuse.
     pub fn owner_only() -> io::Result<Self> {
-        Self::from_sddl(&format!("D:P(A;OICI;FA;;;{})", current_user_sid()?))
+        let me = current_user_sid()?;
+        Self::from_sddl(&format!("O:{me}D:P(A;OICI;FA;;;{me})"))
     }
 
     /// For the control pipe: generic-all for the current user only.
@@ -170,6 +176,19 @@ impl SecurityDescriptor {
         Ok(acl)
     }
 
+    fn owner(&self) -> io::Result<PSID> {
+        let mut owner = PSID::default();
+        let mut defaulted = false.into();
+        // SAFETY: valid descriptor; the SID pointer points into it and lives as long as self.
+        unsafe {
+            GetSecurityDescriptorOwner(self.0, &mut owner, &mut defaulted).map_err(win_err)?;
+        }
+        if owner.0.is_null() {
+            return Err(io::Error::other("descriptor has no owner"));
+        }
+        Ok(owner)
+    }
+
     /// `SECURITY_ATTRIBUTES` pointing at this descriptor; valid while `self` lives.
     pub fn attributes(&self) -> SECURITY_ATTRIBUTES {
         SECURITY_ATTRIBUTES {
@@ -189,18 +208,23 @@ impl Drop for SecurityDescriptor {
     }
 }
 
-/// Replace the DACL of `path` with "current user only", not inherited from the parent.
+/// Make the current user the owner of `path` and replace its DACL with "current user only",
+/// not inherited from the parent. (A user may always make itself the owner of an object it can
+/// change the permissions of.)
 pub fn set_owner_only(path: &Path) -> io::Result<()> {
     let sd = SecurityDescriptor::owner_only()?;
     let dacl = sd.dacl()?;
+    let owner = sd.owner()?;
     let w = wide(path);
-    // SAFETY: NUL-terminated path; the DACL is valid while `sd` lives.
+    // SAFETY: NUL-terminated path; the owner SID and the DACL are valid while `sd` lives.
     let rc = unsafe {
         SetNamedSecurityInfoW(
             PCWSTR(w.as_ptr()),
             SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-            None,
+            OWNER_SECURITY_INFORMATION
+                | DACL_SECURITY_INFORMATION
+                | PROTECTED_DACL_SECURITY_INFORMATION,
+            Some(owner),
             None,
             Some(dacl),
             None,
