@@ -10,6 +10,9 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(windows)]
+mod setup;
+
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 #[cfg(not(windows))]
@@ -29,8 +32,9 @@ use dishus_proto::{
     about = "Control the DiShus remote-control daemon"
 )]
 struct Cli {
+    /// No command on Windows (double-clicking the exe): install for this user and pair a phone.
     #[command(subcommand)]
-    cmd: Cmd,
+    cmd: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
@@ -61,6 +65,9 @@ enum Cmd {
     SetupCapture,
     /// Check that this PC can stream: test-encodes with every encoder and says what to install.
     Doctor,
+    /// Remove DiShus from this PC (pairings and keys are kept in %APPDATA%\dishus).
+    #[cfg(windows)]
+    Uninstall,
 }
 
 /// `dishus doctor` runs `dishus-daemon --doctor`, preferring the daemon installed next to this
@@ -228,20 +235,14 @@ fn stop_daemon() -> std::io::Result<std::process::ExitStatus> {
         .status()
 }
 
-/// End this user's daemon (and its capture worker). taskkill only ends processes the caller
-/// may end, and the filter keeps it to this account's processes anyway.
+/// End this user's daemon (and its capture worker, which runs the same exe); processes of
+/// other accounts are skipped.
 #[cfg(windows)]
-const STOP_DESC: &str = "`taskkill /F /IM dishus-daemon.exe` (this user's only)";
+const STOP_DESC: &str = "ending this user's dishus-daemon.exe processes";
+/// Returns how many processes were ended.
 #[cfg(windows)]
-fn stop_daemon() -> std::io::Result<std::process::ExitStatus> {
-    let user = format!(
-        "USERNAME eq {}\\{}",
-        std::env::var("USERDOMAIN").unwrap_or_default(),
-        std::env::var("USERNAME").unwrap_or_default()
-    );
-    std::process::Command::new("taskkill")
-        .args(["/F", "/T", "/FI", &user, "/IM", "dishus-daemon.exe"])
-        .status()
+fn stop_daemon() -> std::io::Result<usize> {
+    dishus_win::kill_own("dishus-daemon.exe")
 }
 
 fn now() -> u64 {
@@ -392,7 +393,17 @@ fn print_qr(uri: &str) -> Result<()> {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let short = Duration::from_secs(10);
-    match cli.cmd {
+    let Some(cmd) = cli.cmd else {
+        #[cfg(windows)]
+        return setup::run().await;
+        #[cfg(not(windows))]
+        {
+            use clap::CommandFactory;
+            Cli::command().print_help()?;
+            std::process::exit(2);
+        }
+    };
+    match cmd {
         Cmd::Status => match call(IpcRequest::Status, short).await? {
             IpcResponse::Status(s) => {
                 println!("DiShus {} on \"{}\"", s.version, s.pc_name);
@@ -514,53 +525,64 @@ async fn main() -> Result<()> {
             }
         }
         Cmd::Pair { skip_capture_setup } => {
-            if !skip_capture_setup {
-                println!("{}", SETUP_TEXT[0]);
-                match call(IpcRequest::SetupCapture, Duration::from_secs(180)).await {
-                    Ok(IpcResponse::Ok(m)) => println!("          ✓ {m}"),
-                    Ok(_) => {}
-                    Err(e) => println!(
-                        "          ! capture setup failed: {e:#}\n            (pairing continues; video will be unavailable until fixed)"
-                    ),
-                }
-            }
-            let before: Vec<String> = match call(IpcRequest::List, short).await? {
-                IpcResponse::Devices(d) => d
-                    .into_iter()
-                    .map(|d| format!("{}:{}", d.id, d.paired_at))
-                    .collect(),
-                _ => vec![],
-            };
-            let (uri, ttl) = match call(IpcRequest::Pair, short).await? {
-                IpcResponse::Pairing { uri, ttl_secs } => (uri, ttl_secs),
-                r => bail!("unexpected reply {r:?}"),
-            };
-            println!(
-                "\nStep 2/2: scan with the DiShus app (Pair new PC). Valid for {ttl} s, single use.\n"
-            );
-            print_qr(&uri)?;
-            println!("Or paste this link into the app (it is a secret, don't share it):\n{uri}\n");
-            let deadline = std::time::Instant::now() + Duration::from_secs(ttl);
-            loop {
-                tokio::time::sleep(Duration::from_millis(700)).await;
-                if let Ok(IpcResponse::Devices(d)) = call(IpcRequest::List, short).await
-                    && let Some(n) = d
-                        .iter()
-                        .find(|d| !before.contains(&format!("{}:{}", d.id, d.paired_at)))
-                {
-                    println!(
-                        "✓ Paired \"{}\" — expires in {}",
-                        n.name,
-                        human_until(n.expires_at)
-                    );
-                    break;
-                }
-                if std::time::Instant::now() > deadline {
-                    let _ = call(IpcRequest::ClosePairing, short).await;
-                    bail!("pairing window expired; run `dishus pair` again");
-                }
+            if !pair_once(!skip_capture_setup).await? {
+                bail!("pairing window expired; run `dishus pair` again");
             }
         }
+        #[cfg(windows)]
+        Cmd::Uninstall => setup::uninstall()?,
     }
     Ok(())
+}
+
+/// Check capture (optionally), open the pairing window and show the QR code until a phone
+/// pairs (true) or the window expires (false).
+async fn pair_once(capture_setup: bool) -> Result<bool> {
+    let short = Duration::from_secs(10);
+    if capture_setup {
+        println!("{}", SETUP_TEXT[0]);
+        match call(IpcRequest::SetupCapture, Duration::from_secs(180)).await {
+            Ok(IpcResponse::Ok(m)) => println!("          ✓ {m}"),
+            Ok(_) => {}
+            Err(e) => println!(
+                "          ! capture setup failed: {e:#}\n            (pairing continues; video will be unavailable until fixed)"
+            ),
+        }
+    }
+    let before: Vec<String> = match call(IpcRequest::List, short).await? {
+        IpcResponse::Devices(d) => d
+            .into_iter()
+            .map(|d| format!("{}:{}", d.id, d.paired_at))
+            .collect(),
+        _ => vec![],
+    };
+    let (uri, ttl) = match call(IpcRequest::Pair, short).await? {
+        IpcResponse::Pairing { uri, ttl_secs } => (uri, ttl_secs),
+        r => bail!("unexpected reply {r:?}"),
+    };
+    println!(
+        "\nStep 2/2: scan with the DiShus app (Pair new PC). Valid for {ttl} s, single use.\n"
+    );
+    print_qr(&uri)?;
+    println!("Or paste this link into the app (it is a secret, don't share it):\n{uri}\n");
+    let deadline = std::time::Instant::now() + Duration::from_secs(ttl);
+    loop {
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        if let Ok(IpcResponse::Devices(d)) = call(IpcRequest::List, short).await
+            && let Some(n) = d
+                .iter()
+                .find(|d| !before.contains(&format!("{}:{}", d.id, d.paired_at)))
+        {
+            println!(
+                "✓ Paired \"{}\" — expires in {}",
+                n.name,
+                human_until(n.expires_at)
+            );
+            return Ok(true);
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = call(IpcRequest::ClosePairing, short).await;
+            return Ok(false);
+        }
+    }
 }
