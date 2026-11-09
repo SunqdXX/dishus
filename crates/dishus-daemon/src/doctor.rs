@@ -265,7 +265,7 @@ pub fn run() -> i32 {
     match std::fs::OpenOptions::new().write(true).open("/dev/uinput") {
         Ok(_) => println!("  ✓ /dev/uinput writable"),
         Err(e) => println!(
-            "  ✗ /dev/uinput: {e} — the phone could watch but not type; see README \"Let the daemon create input devices\""
+            "  ✗ /dev/uinput: {e} — the phone could watch but not type; see README \"Keyboard and mouse access\""
         ),
     }
 

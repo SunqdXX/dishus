@@ -95,7 +95,7 @@ impl RetryingInput {
                 if self.failures == 0 {
                     tracing::warn!(
                         "cannot open {} yet ({e}); keyboard/mouse disabled, retrying in the \
-                         background. If this persists: README, \"Let the daemon create input devices\".",
+                         background. If this persists: README, \"Keyboard and mouse access\".",
                         self.name
                     );
                 }

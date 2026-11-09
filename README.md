@@ -1,205 +1,131 @@
-# DiShus — Distans Show/Use
+# DiShus
 
-Use your Android phone as the screen, keyboard and mouse of your Linux PC, from anywhere,
-peer-to-peer. No accounts, no cloud service of ours, no port forwarding.
+Control your Linux PC from your Android phone. The phone shows the PC screen live and works as its
+keyboard and touchpad, at home or from anywhere else, straight from phone to PC.
+
+No account, no sign-up, no server of ours in the middle, no port forwarding.
 
 <p align="center">
   <img src="docs/media/remote.gif" alt="Typing on the phone's DiShus keyboard: the command appears and runs in the PC's terminal, the phone shows the PC screen live, and swiping the touchpad moves the PC's pointer" width="100%">
   <br>
-  <sub>Left: the PC. Right: the phone, which shows the PC screen live and works as its keyboard and touchpad.
-  Recorded on a Galaxy Z Fold7's cover screen against a test desktop.</sub>
+  <sub>Left: the PC. Right: the phone showing the PC screen, typing and moving the mouse.</sub>
 </p>
 
-- **PC side:** `dishus-daemon` (a small Rust systemd *user* service) plus the `dishus` CLI.
-- **Phone side:** a Kotlin/Compose app. The top 60 % shows the PC screen and works as a touchpad.
-  The bottom 40 % is a full PC keyboard.
-- **Network:** [iroh](https://iroh.computer) QUIC. Both ends are identified by public keys. The PC
-  opens no listening TCP port. Connections are hole-punched directly when possible, and otherwise
-  go through a relay (by default iroh's public relays, configurable). A relay only carries
-  end-to-end-encrypted QUIC.
-- **Licence:** MIT OR Apache-2.0.
+The phone screen is split in two. The top part shows your PC and doubles as a touchpad. The bottom
+part is a full PC keyboard, with Ctrl, Alt, Super, Esc, F1 to F12 and the arrow keys.
 
-> **Status: alpha (0.1.2).** Daily-tested on Hyprland + NVIDIA with a Galaxy Z Fold7, over Wi-Fi
-> and mobile data. Other desktops, GPUs and phones should work but are less tested.
-> See [Status](#status--whats-verified) for exactly what was verified.
+Free and open source, MIT or Apache-2.0.
 
-## How it works
+## Where it's been tested
 
-```
- phone (Compose UI)                                   PC (systemd --user)
- ┌──────────────────┐   iroh QUIC, ALPN dishus/session/1   ┌──────────────────────────────┐
- │ dishus-core (Rust│◄────────────────────────────────────►│ dishus-daemon                │
- │  via UniFFI)     │  bi-stream: control + input (reliable)│  allowlist gate (pre-parse)  │
- │ MediaCodec H.264 │  uni-stream per video frame (drop-old)│  uinput kbd + pointer        │
- └──────────────────┘                                       │  ├ capture worker (per session)
-                                                            │  │  portal/PipeWire → GStreamer
-                                                            │  │  NVENC → VA → x264 → openh264
-                                                            └──┴───────────────────────────┘
-                                                               ▲ unix socket (0600, uid-checked)
-                                                               dishus CLI
-```
+| | Works on |
+|---|---|
+| Desktops | Hyprland, KDE Plasma, X11 |
+| Graphics | NVIDIA, Intel graphics, and PCs with no graphics card (the CPU encodes the video) |
+| Phones | Samsung Galaxy phones, including the Galaxy Z Fold7 (Android 16) |
+| Networks | home Wi-Fi, mobile data, other people's Wi-Fi; reconnects by itself when the network drops |
 
-- **Video.** Each encoded frame travels on its own QUIC uni-stream. The number of frames allowed in
-  flight scales with the measured round-trip time (4 on a LAN, more on mobile data). If that is
-  exceeded, or a frame misses its 1 s deadline, the PC drops or resets frames and asks the encoder
-  for a keyframe, re-asking until one arrives. The phone never decodes a corrupted half-frame. It also asks for a keyframe on any
-  sequence gap.
-- **Adaptive bitrate and frame rate.** The rate starts at 30 fps. It steps up to 60 fps once the
-  link has stayed clean, backs off by 30 % on congestion, and stays inside the bitrate range set by
-  the quality preset.
-- **Capture and encode** run in a separate worker process that exists only during a session. On
-  NVIDIA, NVENC costs ~300 MB of driver mappings, and that memory is gone as soon as you disconnect.
-- **Input** goes through `/dev/uinput` as evdev *physical* keycodes. The PC's keyboard layout
-  applies, and the on-screen keyboard is labelled US-QWERTY. Every held key and button is released
-  on disconnect, on a 5 s silence, on revoke, and on kill. Power, sleep and wake keys are refused.
-- **Pointer** works like a laptop touchpad (relative):
-  - one finger moves, tap = left click
-  - long-press or two-finger tap = right click
-  - double-tap-and-hold = drag
-  - two fingers = scroll
-  - pinch = zoom the phone view
+Not tested yet: GNOME, AMD graphics, phones from other brands. They use the same code paths and
+should work. If you try one, open an issue and tell us how it went.
 
-Design decisions and their reasons are in [docs/PLAN.md](docs/PLAN.md). The threat model is in
-[docs/SECURITY.md](docs/SECURITY.md).
+You need an Android phone with Android 9 or newer, and a Linux PC with a desktop running.
 
-## Quick start (for friends)
+## Install
 
-You need a Linux PC (Wayland with a screen-share portal, or X11) and an Android phone (Android 9 or newer).
+### 1. Download
 
-1. **Download** both files from the [latest release](https://github.com/SunqdXX/dishus/releases/latest):
-   `dishus-…-linux-x86_64.tar.gz` (PC) and `DiShus-….apk` (phone).
-2. **PC:** unpack and run the installer. It installs for your user only. First it test-encodes
-   video with every encoder your PC could use (NVIDIA, Intel/AMD graphics, or the CPU), and if
-   something is missing it prints the one install command for your distro and GPU. Any PC works:
-   without a supported GPU, DiShus encodes on the CPU.
-   ```sh
-   tar xf dishus-*-linux-x86_64.tar.gz && cd dishus-*-linux-x86_64 && ./install.sh
-   ```
-   For example, Arch with Intel graphics:
-   `sudo pacman -S --needed gst-plugin-va intel-media-driver gst-plugin-pipewire gst-plugins-ugly`.
-   Check again any time with `dishus doctor`.
-   The prebuilt PC binaries need glibc ≥ 2.39 (Arch, Ubuntu 24.04+, Debian 13+, Fedora 40+).
-   On older systems, build from source (below).
-3. **Phone:** open the APK to install it (allow "install unknown apps" for your browser or file
-   manager when Android asks). Start DiShus and choose an app password.
-4. **Pair:** on the PC run `dishus pair`, allow screen sharing (tick *remember* / *allow restore
-   token*), then tap **Scan QR** in the app (or copy the `dishus://pair?…` link it prints and use
-   **Paste link**). The code is valid for 60 s and one use. Done: tap **Connect**.
+From the [latest release](https://github.com/SunqdXX/dishus/releases/latest), get both files:
 
-   <img src="docs/media/pairing.gif" alt="Pairing: dishus pair shows a QR code and link on the PC; the phone pastes the link and the PC appears in its list" width="100%">
-5. **Stay paired:** a pairing lasts 6 months; renew it while connected (settings panel → *Renew 6 months*) or on the PC with
-   `dishus renew <phone>`. `dishus kill` on the PC cuts every session at once (`dishus unlock` undoes it).
+- `dishus-<version>-linux-x86_64.tar.gz` for the PC
+- `DiShus-<version>.apk` for the phone
 
-Works over the internet too (mobile data, other Wi-Fi): no port forwarding, no account, no server
-of ours. The connection is end-to-end encrypted between your phone and your PC.
+### 2. PC
 
-## Install (PC) from source
-
-Arch: `packaging/aur/PKGBUILD` (`dishus-git`) builds from this repository:
+Open a terminal where you downloaded it and run this (it uses the real file name, version
+included):
 
 ```sh
-mkdir -p /tmp/dishus-pkg && cp packaging/aur/PKGBUILD /tmp/dishus-pkg/ && cd /tmp/dishus-pkg
-makepkg -si
+tar xf dishus-*-linux-x86_64.tar.gz
+cd dishus-*-linux-x86_64
+./install.sh
 ```
 
-Or build by hand (Rust ≥ 1.89, GStreamer 1.24+ dev files):
+The installer puts everything in your home folder and starts DiShus in the background. Before that
+it checks your PC: it tries encoding video with every option available (NVIDIA, Intel or AMD
+graphics, the CPU) and tells you what works.
+
+If something is missing, it prints one install command for your distro and graphics card. Run it,
+then run `./install.sh` again. On Arch with Intel graphics, for example:
 
 ```sh
-cargo build --release -p dishus-daemon -p dishus-cli
-install -Dm755 target/release/dishus-daemon ~/.local/bin/dishus-daemon
-install -Dm755 target/release/dishus        ~/.local/bin/dishus
-install -Dm644 packaging/systemd/dishus.service ~/.config/systemd/user/dishus.service
-# edit ExecStart= to ~/.local/bin/dishus-daemon if you installed there
+sudo pacman -S --needed gst-plugin-va intel-media-driver gst-plugin-pipewire gst-plugins-ugly
 ```
 
-Runtime packages (Arch names):
-- **Required:**
-  - `gstreamer`, `gst-plugins-base-libs`
-  - `gst-plugins-bad-libs`: NVENC (`nvcodec`) and `h264parse`
-  - `gst-plugin-pipewire`, `pipewire`, `xdg-desktop-portal`
-  - the portal backend for your desktop (`xdg-desktop-portal-hyprland`, `-gnome`, `-kde`, …)
-- **An H.264 encoder** (at least one; `dishus doctor` tells you which work):
-  - NVIDIA: included in `gst-plugins-bad-libs`, plus the proprietary driver
-  - Intel: `gst-plugin-va` + `intel-media-driver`; AMD: `gst-plugin-va` (driver is in `mesa`)
-  - any CPU: `gst-plugins-ugly` (x264)
-- **Optional:**
-  - `gst-plugins-bad`: openh264
-  - `gst-plugins-good`: X11 capture
+You can run the same check any time with `dishus doctor`.
 
-### 1. Let the daemon create input devices
+The installer may also ask you to run three `sudo` commands for keyboard and mouse access. That's a
+one-time step: Linux only lets programs create a virtual keyboard after you allow it.
 
-The daemon needs write access to `/dev/uinput`. Check first:
+### 3. Phone
 
-```sh
-getfacl /dev/uinput     # your user, or a group you are in, needs rw
-```
+Open the APK on the phone to install it. Android will ask you to allow installing apps from your
+browser or file manager. Start DiShus and pick an app password; it protects your pairings if
+someone gets hold of your phone.
 
-If you lack access, install the shipped rule. It grants access to whoever is logged in at the
-local seat. It is not installed automatically, because on a multi-user machine uinput access means
-being able to type into anyone's session.
+### 4. Pair
 
-```sh
-sudo install -Dm644 /usr/share/dishus/70-dishus-uinput.rules /etc/udev/rules.d/
-echo uinput | sudo tee /etc/modules-load.d/uinput.conf
-sudo udevadm control --reload && sudo modprobe uinput && sudo udevadm trigger
-```
-
-Without uinput the daemon still runs, as view-only. `dishus status` shows `input: none`.
-
-### 2. Start the daemon
-
-```sh
-systemctl --user enable --now dishus.service
-dishus status
-```
-
-The unit is not tied to `graphical-session.target`, because plain Hyprland, without uwsm, never
-reaches it. For screen capture, the portal must see your compositor's environment. Most setups do
-that already (Hyprland, for example, with
-`exec-once = dbus-update-activation-environment --systemd --all`). The X11 fallback also needs
-`DISPLAY` in the user manager: `systemctl --user import-environment DISPLAY`.
-
-### 3. Pair the phone (at the PC)
+On the PC:
 
 ```sh
 dishus pair
 ```
 
-1. **Screen-capture permission.** `dishus pair` first opens your desktop's screen-share dialog.
-   Pick the screen(s), and on Hyprland tick **"Allow a restore token"**. The permission is stored
-   as a restore token, so later remote sessions don't hit a dialog nobody is there to click. You
-   can re-run this alone with `dishus setup-capture`.
-   - xdph users can make the restore-token box default to on with
-     `screencopy { allow_token_by_default = true }` in `~/.config/hypr/xdph.conf`.
-2. **QR code.** It then shows a QR code and a `dishus://pair?…` link. The link is valid for 60 s
-   and for one use. Scan it in the app (**Scan QR**), or paste the link.
-3. **Confirmation.** The CLI prints the new device when pairing succeeds.
+First your desktop asks which screen to share. Pick your whole screen, not a single window, and tick
+"remember" (on Hyprland: "Allow a restore token"). Then a QR code appears. In the app, tap
+**Scan QR**, or copy the `dishus://pair?…` link and use **Paste link**. The code works once and
+expires after 60 seconds.
 
-### Remote use after a reboot: auto-login is required
+<img src="docs/media/pairing.gif" alt="Pairing: dishus pair shows a QR code and link on the PC; the phone pastes the link and the PC appears in its list" width="100%">
 
-`dishus-daemon` is a *user* service. It runs only while you have a logged-in session, and screen
-capture needs a running compositor. For "PC rebooted while I'm away" to work, configure **automatic
-login into your graphical session**. Pair it with a lock screen (hyprlock etc.) if the PC is
-physically accessible: you will see the lock screen remotely and can type your password from the
-phone keyboard.
+That's it. Tap **Connect** in the app.
 
-Configure auto-login in your display manager, for example SDDM `[Autologin]` or greetd
-`initial_session`. DiShus does not change it for you.
+A pairing lasts 6 months. Renew it from the app's settings while connected, or on the PC with
+`dishus renew <phone>`.
 
-### Hyprland: no screen-share dialog when the phone connects
+## Using it
 
-The restore token normally makes reconnects silent. xdph still shows its picker when it rejects
-the stored token (for example one written under another desktop, or after an xdph update), and
-then nobody is at the PC to click it. (With no token at all, the phone is refused: pair at the PC
-first.) DiShus ships a small picker wrapper that answers that dialog
-for DiShus only, and leaves every other app's screen-share request to your normal picker:
+The top of the screen works like a laptop touchpad:
 
-```sh
-install -Dm755 packaging/hyprland/dishus-share-picker ~/.local/bin/dishus-share-picker
-# from a release tarball, install.sh has already put it there
-```
+- move one finger to move the mouse, tap to click
+- long-press or tap with two fingers to right-click
+- double-tap and hold to drag
+- two fingers to scroll, pinch to zoom the picture on the phone
 
-`~/.config/hypr/xdph.conf`:
+On the keyboard, tap a modifier (Ctrl, Alt, Shift, Super) to apply it to the next key, or
+long-press it to keep it held until you tap it again. The keys follow your PC's keyboard layout;
+the labels on the phone are US layout.
+
+The gear icon opens quick settings: frame rate, picture quality, resolution, which monitor to show,
+renewing the pairing, and whether you're connected directly or through a relay.
+
+If you lose your phone or something looks wrong, run `dishus kill` on the PC. It cuts every
+connection at once and refuses new ones until you run `dishus unlock`.
+
+## Using it after the PC reboots
+
+DiShus starts when you log in to your desktop. If you want to reach the PC after a reboot while
+you're away, turn on automatic login in your login manager (SDDM: `[Autologin]`, greetd:
+`initial_session`). Keep a lock screen if other people can reach the PC; you'll see it on the
+phone and can type your password from there.
+
+### Hyprland: no screen-share popup on the PC
+
+When the phone connects, Hyprland sometimes shows its "pick a screen" popup on the PC, and nobody
+is there to click it. DiShus comes with a small helper that answers that popup for DiShus only
+(whole screen, remembered). Every other app still gets your normal picker.
+
+`install.sh` already copies the helper to `~/.local/bin`. To turn it on, add this to
+`~/.config/hypr/xdph.conf` (use your own home path):
 
 ```
 screencopy {
@@ -208,120 +134,174 @@ screencopy {
 }
 ```
 
-then `systemctl --user restart xdg-desktop-portal-hyprland`. If you already used a custom picker,
-put its path on the first line of `~/.config/dishus/share-picker-fallback`.
+Then run `systemctl --user restart xdg-desktop-portal-hyprland`. If you already had a custom
+picker, write its path on the first line of `~/.config/dishus/share-picker-fallback` and the
+helper will keep using it for other apps.
 
-How it decides: while the daemon's capture worker is waiting for the portal *for a phone*, it
-creates `$XDG_RUNTIME_DIR/dishus/autoshare` (mode 0600, yours). The wrapper takes that file
-(one use, at most 20 s old, must be a regular file you own) and answers "the focused monitor,
-whole screen, remember it". With no such file, it starts your normal picker unchanged. `dishus
-pair` and `dishus setup-capture` never create the file, so at the PC you always get the real
-dialog. Each answer is logged: `journalctl -t dishus-share-picker`.
+The helper only answers while DiShus is waiting on a phone's request, for up to 20 seconds. When
+you run `dishus pair` or `dishus setup-capture` at the PC, you always get the real popup. Every
+answer it gives is logged: `journalctl -t dishus-share-picker`.
 
-Restore tokens are also stored per desktop (`portal-restore-token-<desktop>`), so switching
-between, say, Hyprland and Plasma no longer throws away the other desktop's permission.
+## When something goes wrong
 
-## CLI
+**`tar: Cannot open: No such file or directory`**
+The file name has the version in it. Run `ls ~/Downloads | grep dishus` and use the exact name.
 
-```
-dishus status                  daemon state, PC id, relays, capture/input backends, sessions
-dishus pair [--skip-capture-setup]
-dishus list                    paired phones, expiry, last seen
-dishus renew <name|id> [--days N]   extend (1–180 days, default 180)
-dishus revoke <name|id>        remove a phone and cut its session immediately
-dishus kill                    PANIC: cut every session and refuse everything until…
-dishus unlock                  …you leave lockdown (lockdown survives restarts)
-dishus setup-capture           re-grant screen-capture permission
-dishus doctor                  can this PC stream? test-encodes with every encoder, says what to install
+**No picture on the phone**
+Run `dishus doctor` on the PC. It tells you what's missing and the command to fix it.
+
+**I shared the wrong window or screen and ticked "remember"**
+Delete the saved choice, then pick again:
+```sh
+rm -f ~/.local/state/dishus/portal-restore-token*
+dishus setup-capture
 ```
 
-`list` and `revoke` also work when the daemon is stopped; they edit the device file directly.
-`kill` falls back to `systemctl --user stop dishus.service` if the daemon doesn't answer. The
-daemon sends a desktop notification for pairings, connects, disconnects, revokes and kill.
+**The phone sees the screen but can't type or click**
+Keyboard and mouse access isn't set up yet. See the next section.
 
-## Configuration
+### Keyboard and mouse access
 
-`~/.config/dishus/config.toml` (created with defaults; unknown keys are rejected):
+DiShus types and clicks through a virtual keyboard and mouse (`/dev/uinput`), which most distros
+only let root create. Run these once:
+
+```sh
+sudo install -Dm644 70-dishus-uinput.rules /etc/udev/rules.d/70-dishus-uinput.rules
+echo uinput | sudo tee /etc/modules-load.d/uinput.conf
+sudo udevadm control --reload && sudo modprobe uinput && sudo udevadm trigger
+systemctl --user restart dishus
+```
+
+Run the first line from the unpacked release folder. From a source checkout the file is
+`packaging/udev/70-dishus-uinput.rules`. The rule gives access to whoever is logged in at the PC
+itself. It isn't installed automatically because on a PC shared by several people, it also means
+being able to type into another user's session. Without it, DiShus still works, view-only.
+
+**Anything else**
+`dishus status` shows what the PC side is doing, and `journalctl --user -u dishus -e` shows its
+log. Open an issue with both and we'll take a look.
+
+## Uninstall
+
+From the folder you installed from:
+
+```sh
+./install.sh --uninstall
+```
+
+Your pairings stay in `~/.config/dishus` and `~/.local/state/dishus` in case you reinstall. Delete
+those two folders to remove everything. If you ran the keyboard/mouse `sudo` commands, also run
+`sudo rm -f /etc/udev/rules.d/70-dishus-uinput.rules /etc/modules-load.d/uinput.conf`.
+
+## Commands
+
+```
+dishus status          what's running, which encoder, who's connected
+dishus pair            pair a new phone (add --skip-capture-setup to skip the screen popup)
+dishus list            paired phones, when they expire, when they were last seen
+dishus renew <phone>   extend a pairing (--days 1 to 180, default 180)
+dishus revoke <phone>  remove a phone and disconnect it right away
+dishus kill            cut everything and refuse all connections...
+dishus unlock          ...until you run this (survives restarts)
+dishus setup-capture   choose the shared screen again
+dishus doctor          check that this PC can stream, and what to install if not
+```
+
+## Settings
+
+DiShus works without any configuration. To change something, create
+`~/.config/dishus/config.toml`; any setting you leave out keeps its default:
 
 ```toml
-pc_name = "my-desktop"        # shown on the phone (default: hostname)
-relays = []                   # [] = iroh's public relays; or ["https://relay.example.org/"]
-disable_relays = false        # true = direct connections only (LAN / reachable hosts)
-expiry_days = 180             # pairing lifetime, 1..=180
-pairing_ttl_secs = 60         # pairing link lifetime, 10..=60
-udp_port = 0                  # 0 = random; set to pin a port for a firewall/port-forward rule
+pc_name = "my-desktop"        # name shown on the phone (default: the hostname)
+relays = []                   # empty = iroh's public relays, or your own: ["https://relay.example.org/"]
+disable_relays = false        # true = only direct connections (same network or open port)
+expiry_days = 180             # how long a pairing lasts, 1 to 180
+pairing_ttl_secs = 60         # how long a pairing code stays valid, 10 to 60
+udp_port = 0                  # 0 = random; set a fixed port if you want to forward it
 
 [video]
-encoder = "auto"              # auto | nvenc | vaapi | vaapi-lp | x264 | openh264
-max_bitrate_kbps = 20000      # ceiling for the adaptive controller
+encoder = "auto"              # auto, nvenc, vaapi, vaapi-lp, x264 or openh264
+max_bitrate_kbps = 20000
 show_cursor = true
 ```
 
-Restart the daemon after editing (`systemctl --user restart dishus`). The phone has its own relay
-list under **Settings**. To use a self-hosted relay
-([iroh-relay](https://github.com/n0-computer/iroh)), set it on both sides.
+Restart after editing: `systemctl --user restart dishus`.
 
-Files the daemon keeps (all `0600` in `0700` directories; group- or world-readable files are
-refused):
+## How it works
 
-| Path | Content |
-|---|---|
-| `~/.config/dishus/secret.key` | PC identity (Ed25519) |
-| `~/.config/dishus/devices.toml` | allowlist: phone public keys, names, expiry |
-| `~/.local/state/dishus/` | portal restore tokens (one per desktop), lockdown flag |
-| `$XDG_RUNTIME_DIR/dishus/control.sock` | CLI socket |
-| `$XDG_RUNTIME_DIR/dishus/autoshare` | present only while a phone's capture request waits for the portal (Hyprland picker wrapper) |
+The phone and the PC talk over [iroh](https://iroh.computer), an encrypted peer-to-peer
+connection (QUIC). Each side is identified by a key pair, and the PC only accepts phones that were
+paired with it. When the two can reach each other directly, they do, even across different
+networks. When they can't, the traffic goes through a relay, which only passes along encrypted
+data it can't read. The PC opens no listening TCP port.
 
-Logging: `DISHUS_LOG=debug` (a `tracing` filter). Secrets and tokens are never logged.
+On the PC, `dishus-daemon` runs as a user service. When a phone connects, it starts a separate
+capture process that grabs the screen (through the desktop's screen-share portal and PipeWire, or
+X11), compresses it to H.264 with the best encoder available (NVIDIA NVENC, then Intel/AMD VA-API,
+then x264 or openh264 on the CPU) and streams it. That process exits when you disconnect, so its
+memory is freed. Typing and clicks from the phone become a virtual keyboard and mouse
+(`/dev/uinput`). Power, sleep and wake keys are refused, and every held key is released if the
+connection goes quiet for 5 seconds.
 
-## Phone app
+The stream adapts as it goes: it starts at 30 fps, moves up to 60 fps on a good connection, and
+lowers quality on a bad one. Each video frame travels separately, so a lost frame is skipped
+instead of stalling the picture.
 
-- **First start.** Choose an app password. It derives (Argon2id) the key that encrypts the phone's
-  identity and its list of paired PCs. The encrypted blob is then wrapped again by an Android
-  Keystore key (StrongBox when available). Fingerprint or face unlock is optional. There is no
-  recovery: if you forget the password, wipe the app data and pair again.
-- **Pairing.** Scan the QR from `dishus pair`.
-- **Connecting.** Tap a PC. With one paired PC, or "connect to last PC" on, it connects
-  immediately after unlock.
-- **Screen.** Gear icon opens quick settings:
-  - frame rate (Adaptive / 30 / 60), quality, resolution cap, monitor
-  - renew the pairing for 30 days or 6 months
-  - connection path (direct or relay) and app-level round-trip time
-  - relay and app settings, disconnect
-- **Keyboard.** Modifier keys: tap = applies to the next key; long-press = locked until tapped
-  again. Holding a normal key auto-repeats on the PC.
-- **Privacy.** The app locks after the configured time in the background, and drops the session
-  whenever it leaves the foreground. Screenshots and the recents thumbnail are blocked by default
-  (`FLAG_SECURE`; *Settings → Allow screenshots* lifts it everywhere except the lock screen).
-  Backups are disabled.
+On the phone, your pairings and the phone's identity are encrypted with your app password
+(Argon2id) and an Android Keystore key. Screenshots of the app are blocked unless you allow them in
+settings, and backups are off. The app disconnects when it leaves the foreground and locks after a
+while in the background.
 
-### Building the app
+Design notes: [docs/PLAN.md](docs/PLAN.md). Security model: [docs/SECURITY.md](docs/SECURITY.md).
 
-Needs the Android SDK (API 35), NDK 27, `cargo-ndk`, and Rust targets `aarch64-linux-android`
-and `x86_64-linux-android`.
+## Building from source
+
+PC (Rust 1.89 or newer, GStreamer 1.24+ development files):
 
 ```sh
-./android/build-rust.sh          # Rust core for arm64 + x86_64, then Kotlin bindings
+cargo build --release -p dishus-daemon -p dishus-cli
+install -Dm755 -t ~/.local/bin/ target/release/dishus-daemon target/release/dishus
+mkdir -p ~/.config/systemd/user
+sed 's|^ExecStart=.*|ExecStart=%h/.local/bin/dishus-daemon|' packaging/systemd/dishus.service \
+  > ~/.config/systemd/user/dishus.service
+systemctl --user daemon-reload && systemctl --user enable --now dishus
+```
+
+Then set up [keyboard and mouse access](#keyboard-and-mouse-access).
+
+On Arch you can instead build the package in `packaging/aur/PKGBUILD` with `makepkg -si`.
+
+At runtime the PC needs GStreamer with its PipeWire plugin, `h264parse` and at least one H.264
+encoder: NVIDIA (in `gst-plugins-bad-libs`, with the proprietary driver), Intel or AMD
+(`gst-plugin-va`, plus `intel-media-driver` on Intel), or the CPU (`gst-plugins-ugly`). Plus the
+screen-share portal for your desktop. `dishus doctor` checks all of it.
+
+Phone app (Android SDK 35, NDK 27, `cargo-ndk`, Rust targets `aarch64-linux-android` and
+`x86_64-linux-android`):
+
+```sh
+./android/build-rust.sh
 cd android && gradle assembleDebug
 ```
 
-Releases: `packaging/make-release.sh` builds the PC tarball and the signed APK into `dist/`. It
-needs `DISHUS_KEYSTORE_PROPERTIES` pointing at a properties file (`storeFile`, `storePassword`,
-`keyAlias`, `keyPassword`) for the release key, which never goes into the repository.
+`packaging/make-release.sh` builds the PC tarball and the signed APK into `dist/`. It needs
+`DISHUS_KEYSTORE_PROPERTIES` pointing to the release key's properties file, which is never in the
+repository.
 
-## Repository layout
+### Repository layout
 
-| Crate / dir | What |
+| Folder | What's in it |
 |---|---|
-| `crates/dishus-proto` | wire messages, framing with size caps, validation, pairing URI, keycode policy |
-| `crates/dishus-daemon` | daemon: iroh endpoint, allowlist gate, pairing, sessions, ABR, uinput, IPC, capture worker |
-| `crates/dishus-cli` | `dishus` command |
-| `crates/dishus-core` | phone-side core: encrypted vault, iroh client, UniFFI API; `examples/desktop_client.rs` test client |
-| `android/` | Compose app |
-| `packaging/` | systemd unit, AUR PKGBUILD, udev rule |
-| `docs/` | plan & decisions, security, manual test checklist |
+| `crates/dishus-daemon` | the PC service: connections, pairing, video, keyboard and mouse |
+| `crates/dishus-cli` | the `dishus` command |
+| `crates/dishus-core` | the phone's Rust core (encrypted storage, connection), used by the app |
+| `crates/dishus-proto` | the messages both sides exchange, with size limits and validation |
+| `android/` | the phone app (Kotlin, Jetpack Compose) |
+| `packaging/` | installer, systemd unit, udev rule, Hyprland helper, AUR package |
+| `docs/` | design notes, security model, test checklist |
 
-Development checks (the same ones CI runs):
+### Tests
 
 ```sh
 cargo fmt --all --check
@@ -330,52 +310,20 @@ cargo test --workspace
 cargo deny check && cargo audit
 ```
 
-`cargo run -p dishus-core --example desktop_client -- --help` gives a desktop "phone": it can
-pair, stream video to stdout (`… view | ffplay -f h264 -`), send keys and renew.
+CI runs the same checks plus the Android build on every push. There are 73 automated tests, plus
+a soak suite that runs every scenario (pairing, renew, revoke, kill, expiry, restarts) ten times in
+a row against a real daemon. `cargo run -p dishus-core --example desktop_client -- --help` gives
+you a desktop stand-in for the phone, handy for debugging.
 
-## Status — what's verified
+## Known limits
 
-Tested on Arch Linux, Hyprland 0.57, NVIDIA RTX, NVENC, with a Samsung Galaxy Z Fold7
-(Android 16), on 2026-11-08. "10/10" means the scenario was run ten times in a row.
-
-**Verified:**
-
-| | |
-|---|---|
-| ✅ | 73 automated tests (protocol, pairing, expiry/renew, allowlist, revoke, kill/lockdown, idle timeout, held-key release on silence, split frames, slow capture start, stuck-video recovery, vault crypto, frame-rate cap on a live pipeline); end-to-end suite run repeatedly with no flakes |
-| ✅ | Soak suite against isolated daemons (test source and X11 on Xvfb): every scenario ×10 — pairing, renew, revoke, kill/unlock, expiry, quick restarts (single instance, port kept), worker leaks, memory |
-| ✅ | **Real desktop on the phone through the Wayland portal** (Hyprland, xdph restore token, PipeWire, NVENC, 180 Hz monitor): 30 fps cap held 10/10 with 1 keyframe and no gaps; on LAN the phone runs at 60 fps with every received frame rendered, 3–4 ms |
-| ✅ | CPU encoding (x264) on the real desktop at 2560×1440: 30 fps 10/10, no gaps, ~90 % of one core; `dishus doctor` and the installer tested with plugins hidden (fresh-install case) |
-| ✅ | Hyprland, no dialog at the PC: rejected token answered by `dishus-share-picker` 10/10; valid token reused without calling the picker 10/10; phone disconnect/reconnect 10/10 |
-| ✅ | KDE Plasma (Wayland portal): video, restore token reused 10/10 without a dialog |
-| ✅ | The signed release APK and tarball, installed from GitHub Releases on a clean PC and phone |
-| ✅ | CI: build, tests, clippy, fmt, cargo-deny / audit, Android build |
-| ✅ | Phone ↔ PC on the phone: connect/video/back 10/10; exact key codes incl. F1–F12 10/10; tap, move, right-click, drag 10/10; renew 10/10; revoke + re-pair 10/10; held key released when the app leaves the foreground 10/10 |
-| ✅ | Network changes on the phone: Wi-Fi off/on 10/10 recovers by itself; video over **mobile data** verified |
-| ✅ | PC daemon restart mid-session: phone reconnects by itself (~3 s); `dishus kill` / `unlock` shown and recovered on the phone |
-
-**Not verified:**
-
-| | |
-|---|---|
-| ⚠️ | GNOME portal (same code path as Hyprland and KDE, but never run there); phone input on KDE |
-| ⚠️ | A real X11 desktop (only Xvfb) |
-| ⚠️ | VA-API on Intel/AMD (no such GPU here; `dishus doctor` reports it), openh264. Install hints for Ubuntu/Debian and Fedora are unverified on those systems (Arch's are checked against the repos) |
-| ⚠️ | Other phones / Android versions than the one above |
-
-**Known gaps and limits:**
-
-- **Memory.** Measured by the service's cgroup (what the kernel actually charges): idle ≈ 36 MB;
-  **streaming to a phone ≈ 115 MB, peak 121 MB** (daemon + NVENC capture worker). `ps` shows the
-  worker at ≈ 300 MB RSS, but most of that is shared NVIDIA driver mappings. The worker exits when
-  the session ends. VA and x264 workers are unmeasured.
-- **No zero-copy.** PipeWire buffers are SHM, which costs one copy per frame to the encoder. A
-  DMA-BUF → CUDA import is future work.
-- **Displayed RTT is app-level.** The latency number is the control-stream ping, not
-  glass-to-glass latency. Measure that with the checklist in [docs/TESTING.md](docs/TESTING.md).
-- **Keyboard layout.** The on-screen keyboard is US-QWERTY-labelled; keys follow the PC's layout.
-- **One session at a time.** A newer connection replaces the older one.
+- One phone connected at a time. A new connection replaces the old one.
+- The latency shown in the app is the network round trip, not the full delay from the PC screen
+  to your phone's screen.
+- The keyboard labels are US layout; the keys themselves follow your PC's layout.
+- Memory on the PC: about 36 MB idle, about 115 MB while streaming with NVIDIA.
+- Each frame is copied once on its way to the encoder. Zero-copy capture is on the to-do list.
 
 ## Licence
 
-Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
+MIT or Apache-2.0, your choice. See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE).

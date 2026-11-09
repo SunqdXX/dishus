@@ -33,7 +33,7 @@ if ! "$here/bin/dishus" --version >/dev/null 2>&1; then
   warn "the prebuilt binaries don't run on this system:"
   "$here/bin/dishus" --version 2>&1 | head -3 || true
   echo "  They need glibc ≥ 2.39 (Arch, Ubuntu 24.04+, Debian 13+, Fedora 40+) and GStreamer."
-  echo "  On older systems build from source: https://github.com/SunqdXX/dishus#install-pc-from-source"
+  echo "  On older systems build from source: https://github.com/SunqdXX/dishus#building-from-source"
   exit 1
 fi
 
@@ -91,7 +91,7 @@ if [ -x "$bin/dishus-share-picker" ] && command -v hyprctl >/dev/null 2>&1; then
     echo "        allow_token_by_default = true"
     echo "        custom_picker_binary = $bin/dishus-share-picker"
     echo "    }"
-    echo "  then: systemctl --user restart xdg-desktop-portal-hyprland   (README: 'Hyprland: no screen-share dialog')"
+    echo "  then: systemctl --user restart xdg-desktop-portal-hyprland   (README: 'Hyprland: no screen-share popup on the PC')"
   fi
 fi
 

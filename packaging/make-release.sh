@@ -3,7 +3,7 @@
 #   dishus-<ver>-linux-x86_64.tar.gz   PC daemon + CLI + installer
 #   DiShus-<ver>.apk                   Android app, signed with the release key
 #   SHA256SUMS
-# Needs: the Android toolchain (see README "Building the app") and
+# Needs: the Android toolchain (see README "Building from source") and
 # DISHUS_KEYSTORE_PROPERTIES pointing at the release signing key (kept outside the repo).
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
