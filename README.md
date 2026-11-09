@@ -1,6 +1,6 @@
 # DiShus
 
-Control your Linux PC from your Android phone. The phone shows the PC screen live and works as its
+Control your PC from your Android phone, on Linux or Windows. The phone shows the PC screen live and works as its
 keyboard and touchpad, at home or from anywhere else, straight from phone to PC.
 
 No account, no sign-up, no server of ours in the middle, no port forwarding.
@@ -20,7 +20,7 @@ Free and open source, MIT or Apache-2.0.
 
 | | Works on |
 |---|---|
-| Desktops | Hyprland, KDE Plasma, X11 |
+| Systems | Linux (Hyprland, KDE Plasma, X11) and Windows |
 | Graphics | NVIDIA, Intel graphics, and PCs with no graphics card (the CPU encodes the video) |
 | Phones | Samsung Galaxy phones, including the Galaxy Z Fold7 (Android 16) |
 | Networks | home Wi-Fi, mobile data, other people's Wi-Fi; reconnects by itself when the network drops |
@@ -28,7 +28,7 @@ Free and open source, MIT or Apache-2.0.
 Not tested yet: GNOME, AMD graphics, phones from other brands. They use the same code paths and
 should work. If you try one, open an issue and tell us how it went.
 
-You need an Android phone with Android 9 or newer, and a Linux PC with a desktop running.
+You need an Android phone with Android 9 or newer, and a Linux or Windows PC.
 
 ## Install
 
@@ -36,10 +36,26 @@ You need an Android phone with Android 9 or newer, and a Linux PC with a desktop
 
 From the [latest release](https://github.com/SunqdXX/dishus/releases/latest), get both files:
 
-- `dishus-<version>-linux-x86_64.tar.gz` for the PC
-- `DiShus-<version>.apk` for the phone
+- for a Linux PC: `dishus-<version>-linux-x86_64.tar.gz`
+- for a Windows PC: `DiShus-<version>-windows-x86_64.exe`
+- for the phone: `DiShus-<version>.apk`
 
-### 2. PC
+### 2. PC on Windows
+
+Double-click `DiShus-<version>-windows-x86_64.exe`. Nothing else needs to be installed, and it
+doesn't need administrator rights.
+
+- The exe isn't signed, so Windows shows "Windows protected your PC". Click **More info**, then
+  **Run anyway**. Some antivirus programs may be suspicious of it for the same reason.
+- It installs DiShus for your user, starts it, and shows a QR code to pair your phone (step 4).
+- The first time it runs, the Windows firewall asks whether DiShus may use the network. Click
+  **Allow**.
+
+DiShus then runs in the background and starts by itself when you sign in. To remove it, run
+`dishus uninstall`. Your pairings are kept in `%APPDATA%\dishus`, so they come back if you
+install it again.
+
+### 2. PC on Linux
 
 Open a terminal where you downloaded it and run this (it uses the real file name, version
 included):
@@ -74,7 +90,10 @@ someone gets hold of your phone.
 
 ### 4. Pair
 
-On the PC:
+On Windows the installer already shows the QR code. To pair another phone later, run
+`dishus pair` or open the exe again.
+
+On Linux:
 
 ```sh
 dishus pair
@@ -114,8 +133,8 @@ connection at once and refuses new ones until you run `dishus unlock`.
 ## Using it after the PC reboots
 
 DiShus starts when you log in to your desktop. If you want to reach the PC after a reboot while
-you're away, turn on automatic login in your login manager (SDDM: `[Autologin]`, greetd:
-`initial_session`). Keep a lock screen if other people can reach the PC; you'll see it on the
+you're away, turn on automatic login: on Linux in your login manager (SDDM: `[Autologin]`, greetd:
+`initial_session`), on Windows with `netplwiz`. Keep a lock screen if other people can reach the PC; you'll see it on the
 phone and can type your password from there.
 
 ### Hyprland: no screen-share popup on the PC
@@ -183,7 +202,10 @@ log. Open an issue with both and we'll take a look.
 
 ## Uninstall
 
-From the folder you installed from:
+Windows: `dishus uninstall`. Pairings and keys stay in `%APPDATA%\dishus` and logs in
+`%LOCALAPPDATA%\dishus`; delete those two folders to remove everything.
+
+Linux, from the folder you installed from:
 
 ```sh
 ./install.sh --uninstall
@@ -205,12 +227,13 @@ dishus kill            cut everything and refuse all connections...
 dishus unlock          ...until you run this (survives restarts)
 dishus setup-capture   choose the shared screen again
 dishus doctor          check that this PC can stream, and what to install if not
+dishus uninstall       (Windows) remove DiShus, keep the pairings
 ```
 
 ## Settings
 
-DiShus works without any configuration. To change something, create
-`~/.config/dishus/config.toml`; any setting you leave out keeps its default:
+DiShus works without any configuration. To change something, create `config.toml` in
+`~/.config/dishus/` (Windows: `%APPDATA%\dishus\`); any setting you leave out keeps its default:
 
 ```toml
 pc_name = "my-desktop"        # name shown on the phone (default: the hostname)
@@ -226,7 +249,8 @@ max_bitrate_kbps = 20000
 show_cursor = true
 ```
 
-Restart after editing: `systemctl --user restart dishus`.
+Restart DiShus after editing (Linux: `systemctl --user restart dishus`, Windows: sign out and
+back in, or run the installer exe again).
 
 ## How it works
 
@@ -243,6 +267,11 @@ then x264 or openh264 on the CPU) and streams it. That process exits when you di
 memory is freed. Typing and clicks from the phone become a virtual keyboard and mouse
 (`/dev/uinput`). Power, sleep and wake keys are refused, and every held key is released if the
 connection goes quiet for 5 seconds.
+
+On Windows it works the same way with what ships with Windows: Desktop Duplication grabs the
+screen, Media Foundation encodes it (on the graphics card when there is one), and SendInput types
+and clicks. The control channel is a named pipe that only your Windows account can open, and the
+key files are readable by your account only.
 
 The stream adapts as it goes: it starts at 30 fps, moves up to 60 fps on a good connection, and
 lowers quality on a bad one. Each video frame travels separately, so a lost frame is skipped
@@ -272,6 +301,10 @@ Then set up [keyboard and mouse access](#keyboard-and-mouse-access).
 
 On Arch you can instead build the package in `packaging/aur/PKGBUILD` with `makepkg -si`.
 
+Windows (Rust with the MSVC toolchain, Visual Studio Build Tools with "Desktop development with
+C++"): `packaging\windows\build.ps1` builds the one-file installer into `dist\`. CI builds the
+same exe on every push.
+
 At runtime the PC needs GStreamer with its PipeWire plugin, `h264parse` and at least one H.264
 encoder: NVIDIA (in `gst-plugins-bad-libs`, with the proprietary driver), Intel or AMD
 (`gst-plugin-va`, plus `intel-media-driver` on Intel), or the CPU (`gst-plugins-ugly`). Plus the
@@ -297,8 +330,9 @@ repository.
 | `crates/dishus-cli` | the `dishus` command |
 | `crates/dishus-core` | the phone's Rust core (encrypted storage, connection), used by the app |
 | `crates/dishus-proto` | the messages both sides exchange, with size limits and validation |
+| `crates/dishus-win` | Windows helpers: private files, the control pipe, registry |
 | `android/` | the phone app (Kotlin, Jetpack Compose) |
-| `packaging/` | installer, systemd unit, udev rule, Hyprland helper, AUR package |
+| `packaging/` | Linux installer, systemd unit, udev rule, Hyprland helper, AUR package, Windows build script |
 | `docs/` | design notes, security model, test checklist |
 
 ### Tests
@@ -310,7 +344,7 @@ cargo test --workspace
 cargo deny check && cargo audit
 ```
 
-CI runs the same checks plus the Android build on every push. There are 73 automated tests, plus
+CI runs the same checks on Linux and Windows, plus the Android build, on every push. There are 73 automated tests, plus
 a soak suite that runs every scenario (pairing, renew, revoke, kill, expiry, restarts) ten times in
 a row against a real daemon. `cargo run -p dishus-core --example desktop_client -- --help` gives
 you a desktop stand-in for the phone, handy for debugging.
@@ -321,8 +355,15 @@ you a desktop stand-in for the phone, handy for debugging.
 - The latency shown in the app is the network round trip, not the full delay from the PC screen
   to your phone's screen.
 - The keyboard labels are US layout; the keys themselves follow your PC's layout.
-- Memory on the PC: about 36 MB idle, about 115 MB while streaming with NVIDIA.
+- Memory on the PC: about 36 MB idle, about 115 MB while streaming with NVIDIA (Linux).
+- Windows doesn't let normal programs see or control the lock screen, the Ctrl+Alt+Del screen,
+  or UAC "allow this app" prompts. On the phone they show up frozen or black until they're gone.
+  Windows that run as administrator also ignore DiShus's typing and clicks.
 - Each frame is copied once on its way to the encoder. Zero-copy capture is on the to-do list.
+
+## Thanks
+
+Windows support was built by [yasinlol](https://github.com/yasinlol).
 
 ## Licence
 
