@@ -12,12 +12,26 @@
 
 use std::{
     io::Write,
-    os::unix::fs::OpenOptionsExt,
     path::PathBuf,
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
+
+/// Windows: files under %LOCALAPPDATA% are private to the user already; `mode` is a no-op.
+#[cfg(not(unix))]
+trait OpenOptionsExt {
+    fn mode(&mut self, _: u32) -> &mut Self;
+}
+#[cfg(not(unix))]
+impl OpenOptionsExt for std::fs::OpenOptions {
+    fn mode(&mut self, _: u32) -> &mut Self {
+        self
+    }
+}
+
 use dishus_core::{
     Client, NetConfig,
     proto::{ClientMsg, PairingInfo, Quality, ServerMsg, StreamParams},
@@ -29,6 +43,7 @@ fn dir() -> PathBuf {
         return d.into();
     }
     let base = std::env::var_os("XDG_STATE_HOME")
+        .or_else(|| std::env::var_os("LOCALAPPDATA"))
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap()).join(".local/state"));
     base.join("dishus-test-client")

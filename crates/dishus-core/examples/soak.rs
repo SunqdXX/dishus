@@ -13,12 +13,26 @@
 //! ```
 use std::{
     io::Write,
-    os::unix::fs::OpenOptionsExt,
     path::PathBuf,
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
+
+/// Windows: files under %LOCALAPPDATA% are private to the user already; `mode` is a no-op.
+#[cfg(not(unix))]
+trait OpenOptionsExt {
+    fn mode(&mut self, _: u32) -> &mut Self;
+}
+#[cfg(not(unix))]
+impl OpenOptionsExt for std::fs::OpenOptions {
+    fn mode(&mut self, _: u32) -> &mut Self {
+        self
+    }
+}
+
 use dishus_core::{
     Client, NetConfig, Session,
     proto::{ClientMsg, MouseButton, PairingInfo, Quality, ServerMsg, StreamParams},
