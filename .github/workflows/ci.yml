@@ -33,6 +33,26 @@ jobs:
       - name: Daemon without platform features
         run: cargo test -p dishus-daemon --no-default-features
 
+  windows:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests (Windows capture, input, ACLs, control pipe, plus the shared suite)
+        run: cargo test --workspace
+      # The release exe is built here, from the reviewed source, not on someone's PC.
+      - name: Build the one-file Windows installer
+        shell: pwsh
+        run: ./packaging/windows/build.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dishus-windows
+          path: dist/*
+
   audit:
     runs-on: ubuntu-24.04
     steps:
