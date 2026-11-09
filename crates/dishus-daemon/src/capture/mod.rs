@@ -11,6 +11,7 @@
 //! * **Test**: `DISHUS_TEST_SOURCE=1` streams a GStreamer test pattern (no permission needed).
 
 pub mod client;
+pub mod throttle;
 pub mod wire;
 
 #[cfg(feature = "capture")]
