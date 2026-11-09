@@ -777,6 +777,7 @@ dependencies = [
  "anyhow",
  "clap",
  "dishus-proto",
+ "dishus-win",
  "qrcode",
  "tokio",
  "toml",
@@ -814,6 +815,7 @@ dependencies = [
  "data-encoding",
  "dishus-core",
  "dishus-proto",
+ "dishus-win",
  "evdev",
  "getrandom 0.4.3",
  "gstreamer",
@@ -830,6 +832,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "windows",
  "zbus",
  "zeroize",
 ]
@@ -843,6 +846,15 @@ dependencies = [
  "serde",
  "thiserror 2.0.21",
  "tokio",
+]
+
+[[package]]
+name = "dishus-win"
+version = "0.1.2"
+dependencies = [
+ "tempfile",
+ "tokio",
+ "windows",
 ]
 
 [[package]]

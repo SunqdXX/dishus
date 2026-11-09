@@ -1,0 +1,25 @@
+[package]
+name = "dishus-win"
+description = "Windows helpers shared by the DiShus daemon and CLI: user SID, owner-only ACLs, control pipe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+tokio = { workspace = true, features = ["net"] }
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_System_Threading",
+  "Win32_System_Pipes",
+  "Win32_Storage_FileSystem",
+] }
+
+[target.'cfg(windows)'.dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["net", "rt", "macros"] }
+
+[lints]
+workspace = true
