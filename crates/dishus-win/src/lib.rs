@@ -11,6 +11,8 @@
 #![cfg(windows)]
 #![allow(unsafe_code)]
 
+pub mod reg;
+
 use std::{
     ffi::c_void,
     io,
@@ -380,9 +382,87 @@ pub fn pipe_server_sid(pipe: &impl AsRawHandle) -> io::Result<String> {
     process_user_sid(pid)
 }
 
+/// End every process named `image` (e.g. `dishus-daemon.exe`) that runs as the current user,
+/// except this one, and wait up to 5 s for each to exit. Returns how many were ended.
+///
+/// (`taskkill /FI "USERNAME eq …"` does the same but looks up every process owner by name,
+/// which took over 30 s on a normal PC.)
+pub fn kill_own(image: &str) -> io::Result<usize> {
+    use windows::Win32::System::{
+        Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+            TH32CS_SNAPPROCESS,
+        },
+        Threading::{
+            PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
+        },
+    };
+    let me = current_user_sid()?;
+    let own_pid = std::process::id();
+    let mut pids = Vec::new();
+    // SAFETY: a process snapshot we own and close; PROCESSENTRY32W is plain data with its size
+    // set as the API requires.
+    unsafe {
+        let snap = Handle(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).map_err(win_err)?);
+        let mut e = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        let mut ok = Process32FirstW(snap.0, &mut e).is_ok();
+        while ok {
+            let n = e
+                .szExeFile
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(e.szExeFile.len());
+            let name = String::from_utf16_lossy(&e.szExeFile[..n]);
+            if name.eq_ignore_ascii_case(image) && e.th32ProcessID != own_pid {
+                pids.push(e.th32ProcessID);
+            }
+            ok = Process32NextW(snap.0, &mut e).is_ok();
+        }
+    }
+    let mut ended = 0;
+    for pid in pids {
+        if process_user_sid(pid).ok().as_deref() != Some(me.as_str()) {
+            continue; // another account's process: not ours to end (and we couldn't anyway)
+        }
+        // SAFETY: an owned process handle, closed by `Handle`.
+        unsafe {
+            let Ok(h) = OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, false, pid) else {
+                continue;
+            };
+            let h = Handle(h);
+            if TerminateProcess(h.0, 1).is_ok() {
+                WaitForSingleObject(h.0, 5000);
+                ended += 1;
+            }
+        }
+    }
+    Ok(ended)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kill_own_ends_only_matching_processes() {
+        // A copy of a harmless system program under a unique name.
+        let t = tempfile::tempdir().unwrap();
+        let name = format!("dishus-killtest-{}.exe", std::process::id());
+        let exe = t.path().join(&name);
+        std::fs::copy(r"C:\Windows\System32\ping.exe", &exe).unwrap();
+        let mut child = std::process::Command::new(&exe)
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert_eq!(kill_own("no-such-image.exe").unwrap(), 0);
+        assert_eq!(kill_own(&name.to_uppercase()).unwrap(), 1);
+        assert!(child.wait().is_ok());
+    }
 
     #[test]
     fn sid_looks_like_a_user() {
