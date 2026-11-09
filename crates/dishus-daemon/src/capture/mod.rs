@@ -1,25 +1,32 @@
 //! Screen capture + H.264 encoding, run in a per-session worker process.
 //!
 //! * [`client`] (daemon side, always built): spawns and drives the worker.
-//! * `worker`, `pipeline`, `portal` (feature `capture`): the worker itself.
+//! * `worker`, `pipeline`, `portal` (feature `capture`, Linux): the worker itself.
+//! * `win` (feature `capture`, Windows): the same worker on Desktop Duplication and
+//!   Media Foundation, speaking the same [`wire`] protocol.
 //!
 //! Capture sources inside the worker:
 //! * **Portal** (default; any compositor with xdg-desktop-portal ScreenCast: Hyprland via
 //!   xdg-desktop-portal-hyprland, niri via -gnome, GNOME, KDE): PipeWire node + restore token so
 //!   it doesn't prompt every time.
 //! * **X11** fallback: `ximagesrc` of the whole screen when no portal ScreenCast is available.
-//! * **Test**: `DISHUS_TEST_SOURCE=1` streams a GStreamer test pattern (no permission needed).
+//! * **Windows**: DXGI Desktop Duplication, one output per monitor, no permission dialog.
+//! * **Test**: `DISHUS_TEST_SOURCE=1` streams a test pattern (no permission needed).
 
 pub mod client;
 pub mod throttle;
 pub mod wire;
 
-#[cfg(feature = "capture")]
+#[cfg(all(feature = "capture", not(windows)))]
 pub mod pipeline;
-#[cfg(feature = "capture")]
+#[cfg(all(feature = "capture", not(windows)))]
 mod portal;
-#[cfg(feature = "capture")]
+#[cfg(all(feature = "capture", windows))]
+pub mod win;
+#[cfg(all(feature = "capture", not(windows)))]
 pub mod worker;
+#[cfg(all(feature = "capture", windows))]
+pub use win::worker;
 
 use std::path::PathBuf;
 
