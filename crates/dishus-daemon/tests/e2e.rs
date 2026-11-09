@@ -346,7 +346,9 @@ async fn pair_connect_input_video_release() {
     wait_for(|| pc.input.log().contains(&"key 125 up".to_string())).await;
     let log = pc.input.log();
     assert!(log.contains(&"btn Left up".to_string()), "{log:?}");
-    assert!(pc.state.sessions().is_empty());
+    // Held input is released first, then the session is unregistered: wait for the second
+    // step too instead of racing it (a slow CI runner caught the gap between them).
+    wait_for(|| pc.state.sessions().is_empty()).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
