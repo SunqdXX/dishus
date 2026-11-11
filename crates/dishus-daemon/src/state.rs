@@ -258,7 +258,7 @@ impl AppState {
         self.lockdown.store(true, Ordering::SeqCst);
         self.close_pairing();
         let n = self.end_all_sessions(ByeReason::Killed);
-        self.release_input();
+        self.end_session_input();
         write_private(&self.paths.lockdown_file(), b"locked by `dishus kill`\n")?;
         self.notifier.notify(
             "DiShus: KILLED",
@@ -358,8 +358,14 @@ impl AppState {
             .collect()
     }
 
+    /// Mid-session: let go of held keys and buttons (lock keys stay as the phone set them).
     pub fn release_input(&self) {
         self.input.lock().expect("input lock").release_all();
+    }
+
+    /// A session is over: release everything and undo Caps/Num/Scroll Lock left toggled.
+    pub fn end_session_input(&self) {
+        self.input.lock().expect("input lock").end_session();
     }
 }
 

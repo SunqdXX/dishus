@@ -101,7 +101,8 @@ enum VideoCmd {
     SetStream(StreamParams),
 }
 
-/// Ends the session cleanly whatever path we leave through: release held input, unregister.
+/// Ends the session cleanly whatever path we leave through: release held input (and undo lock
+/// keys), unregister.
 struct SessionGuard {
     state: Arc<AppState>,
     id: u64,
@@ -110,7 +111,7 @@ struct SessionGuard {
 
 impl Drop for SessionGuard {
     fn drop(&mut self) {
-        self.state.release_input();
+        self.state.end_session_input();
         self.state.unregister_session(self.id);
         self.state
             .notifier
@@ -291,8 +292,8 @@ pub async fn handle(state: Arc<AppState>, conn: Connection) -> Result<()> {
     };
     reader.abort();
     tracing::info!("{name}: session ended ({reason:?})");
-    // Release input *before* anything that can block.
-    state.release_input();
+    // Release input (and undo lock keys) *before* anything that can block.
+    state.end_session_input();
     if let Some(v) = video {
         v.abort();
     }

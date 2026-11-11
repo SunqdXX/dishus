@@ -292,7 +292,7 @@ async fn main() -> Result<()> {
     }
     tracing::info!("shutting down");
     state.end_all_sessions(dishus_proto::ByeReason::Normal);
-    state.release_input();
+    state.end_session_input();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), router.shutdown()).await;
     #[cfg(not(windows))]
     let _ = std::fs::remove_file(state.paths.socket());

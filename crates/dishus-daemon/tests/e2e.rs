@@ -351,6 +351,30 @@ async fn pair_connect_input_video_release() {
     wait_for(|| pc.state.sessions().is_empty()).await;
 }
 
+/// Caps Lock is a toggle, not a held key: a tap leaves nothing "held", so it used to stay on
+/// after the phone left (on Hyprland only on DiShus's own keyboard, invisible on the real one's
+/// LED). The session end must turn it back off, and only then, not on "Release all keys".
+#[tokio::test(flavor = "multi_thread")]
+async fn caps_lock_left_on_is_turned_off_at_disconnect() {
+    let pc = Pc::start().await;
+    let ph = phone().await;
+    ph.pair(&pc.pairing_link(), "p").await.unwrap();
+    let s = connect(&ph, &pc.as_paired()).await.unwrap();
+    let caps = |log: &[String]| log.iter().filter(|l| *l == "key 58 down").count();
+    for down in [true, false] {
+        s.send(ClientMsg::Key { code: 58, down }).unwrap();
+    }
+    s.send(ClientMsg::ReleaseAll).unwrap();
+    s.send(ClientMsg::MouseMove { dx: 1, dy: 1 }).unwrap();
+    wait_for(|| pc.input.log().iter().any(|l| l == "move 1 1")).await;
+    assert_eq!(caps(&pc.input.log()), 1, "{:?}", pc.input.log());
+    drop(s);
+    wait_for(|| caps(&pc.input.log()) == 2).await;
+    wait_for(|| pc.state.sessions().is_empty()).await;
+    let log = pc.input.log();
+    assert_eq!(log.last().map(String::as_str), Some("key 58 up"), "{log:?}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn unknown_peer_is_dropped() {
     let pc = Pc::start().await;

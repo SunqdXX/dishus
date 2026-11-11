@@ -139,10 +139,25 @@ impl InputSink for RetryingInput {
 /// Wraps an [`InputSink`] and remembers what is held down, so everything can be released on
 /// disconnect/timeout no matter what the phone did. Stuck modifiers on a remote PC are a real
 /// hazard (a stuck Super or Ctrl turns every later keystroke into a shortcut).
+///
+/// Lock keys (Caps, Num, Scroll Lock) are toggles, so "held" doesn't cover them: a tap leaves
+/// nothing held but the lock on. Their toggles are counted too, and [`Self::end_session`] taps
+/// each one the phone left toggled once more. That restores the state from before the session
+/// (on Hyprland each keyboard has its own lock state, so DiShus's keyboard alone would stay in
+/// Caps Lock, invisible on the real keyboard's LED; on Windows and X11 the state is global).
 pub struct TrackedInput {
     sink: Box<dyn InputSink>,
     keys: BTreeSet<u16>,
     buttons: Vec<MouseButton>,
+    /// Lock keys toggled an odd number of times this session.
+    toggled: BTreeSet<u16>,
+}
+
+/// KEY_CAPSLOCK, KEY_NUMLOCK, KEY_SCROLLLOCK.
+const LOCK_KEYS: [(u16, &str); 3] = [(58, "Caps Lock"), (69, "Num Lock"), (70, "Scroll Lock")];
+
+fn lock_name(code: u16) -> Option<&'static str> {
+    LOCK_KEYS.iter().find(|(c, _)| *c == code).map(|(_, n)| *n)
 }
 
 impl TrackedInput {
@@ -151,12 +166,32 @@ impl TrackedInput {
             sink,
             keys: BTreeSet::new(),
             buttons: Vec::new(),
+            toggled: BTreeSet::new(),
         }
     }
 
     pub fn key(&mut self, code: u16, down: bool) -> std::io::Result<()> {
         if down {
-            self.keys.insert(code);
+            // An auto-repeat "down" of a key already held is not a new press.
+            if self.keys.insert(code)
+                && let Some(name) = lock_name(code)
+            {
+                let changed = if self.toggled.remove(&code) {
+                    false
+                } else {
+                    self.toggled.insert(code);
+                    true
+                };
+                // Only lock keys are logged: logging every key would record typed passwords.
+                tracing::debug!(
+                    "{name} toggled by the phone ({})",
+                    if changed {
+                        "now the other way than before the session"
+                    } else {
+                        "back to how it was"
+                    }
+                );
+            }
         } else if !self.keys.remove(&code) {
             return Ok(()); // release of something not held: ignore
         }
@@ -195,6 +230,24 @@ impl TrackedInput {
         for b in std::mem::take(&mut self.buttons) {
             if let Err(e) = self.sink.button(b, false) {
                 tracing::error!("releasing button {b:?}: {e}");
+            }
+        }
+    }
+
+    /// The session is over: release everything held, then undo the lock keys the phone left
+    /// toggled, so the PC is back to how it was. Not for mid-session releases (the phone's
+    /// "Release all keys", a network blip): there the person still expects their Caps Lock.
+    pub fn end_session(&mut self) {
+        self.release_all();
+        for code in std::mem::take(&mut self.toggled) {
+            let name = lock_name(code).unwrap_or("lock key");
+            let r = self
+                .sink
+                .key(code, true)
+                .and_then(|()| self.sink.key(code, false));
+            match r {
+                Ok(()) => tracing::info!("{name} was left toggled by the phone; switched it back"),
+                Err(e) => tracing::error!("restoring {name}: {e}"),
             }
         }
     }
@@ -417,5 +470,37 @@ mod tests {
                 "k125+", "k29+", "k30+", "k30-", "Left+", "Left+", "k125-", "k29-", "Left-"
             ]
         );
+    }
+
+    #[test]
+    fn end_session_turns_off_locks_the_phone_turned_on() {
+        let rec = Rec::default();
+        let mut t = TrackedInput::new(Box::new(rec.clone()));
+        let tap = |t: &mut TrackedInput, c| {
+            t.key(c, true).unwrap();
+            t.key(c, false).unwrap();
+        };
+        tap(&mut t, 58); // Caps Lock on
+        tap(&mut t, 69); // Num Lock on...
+        tap(&mut t, 69); // ...and off again: nothing to undo
+        t.key(70, true).unwrap(); // Scroll Lock pressed (toggles on press)...
+        t.key(70, true).unwrap(); // ...an auto-repeat down is not a second toggle
+        // Mid-session releases (phone's "Release all keys", a network blip) must not touch
+        // locks: the person is still typing and expects Caps Lock to stay as they set it.
+        t.release_all();
+        let mid: Vec<String> = rec.0.lock().unwrap().clone();
+        assert_eq!(mid.last().map(String::as_str), Some("k70-"));
+        assert_eq!(mid.iter().filter(|l| *l == "k58+").count(), 1);
+        t.key(30, true).unwrap(); // a held letter at the end
+        rec.0.lock().unwrap().clear();
+        t.end_session();
+        // held keys first, then one tap per lock that is still toggled, low code first
+        assert_eq!(
+            *rec.0.lock().unwrap(),
+            vec!["k30-", "k58+", "k58-", "k70+", "k70-"]
+        );
+        rec.0.lock().unwrap().clear();
+        t.end_session(); // idempotent: the next session starts clean
+        assert!(rec.0.lock().unwrap().is_empty());
     }
 }
