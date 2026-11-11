@@ -14,8 +14,8 @@ android {
         applicationId = "org.dishus.app"
         minSdk = 28
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.1.3"
+        versionCode = 5
+        versionName = "0.1.4"
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     }
 
