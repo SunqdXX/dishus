@@ -6,9 +6,10 @@ scripts: copy a build in, run it on the Windows desktop, read its logs, take scr
 throw all changes away again.
 
 **Video doesn't work in the VM yet.** See [Known limits](#known-limits). Tested so far with
-0.1.4: the installer, the firewall prompt, the pairing QR code, auto-start at login,
-`dishus status`, `dishus doctor` and the logs. Connecting a phone (or the `desktop_client`
-example) and keyboard/mouse input haven't been tried yet.
+0.1.4: the installer, the firewall prompt, pairing and keyboard input (with the
+`desktop_client` example as the phone), Caps Lock being switched back off when a session ends,
+auto-start at login, `dishus status`, `dishus doctor` and the logs. Mouse input and a real
+phone haven't been tried yet.
 
 ## How it works
 
@@ -114,6 +115,22 @@ then Enter.
 virsh -c qemu:///session send-key dishus-win11 KEY_TAB
 virsh -c qemu:///session send-key dishus-win11 KEY_ENTER
 ```
+
+## Without a phone
+
+The `desktop_client` example can play the phone from the Linux side. The installer opens the
+pairing window for 60 seconds and writes the link into its run log, so be quick:
+
+```sh
+export DISHUS_CLIENT_DIR=/tmp/dishus-vm-client    # keeps this pairing apart from any other
+link=$(scripts/vm-ssh.sh "(Select-String -Path C:\dishus\run-*.log -Pattern 'dishus://pair' | Select -Last 1).Line.Trim()" | tr -d '\r')
+cargo run -p dishus-core --example desktop_client -- pair "$link"
+cargo run -p dishus-core --example desktop_client -- keys 35      # types h
+```
+
+Each `keys` call is one session. Linux key codes: 35 is H, 30 is A, 58 is Caps Lock.
+A window to type into: `scripts/vm-run.sh 'C:\Windows\System32\cmd.exe' /k` shows what's typed.
+Notepad doesn't work for this: on a fresh VM it starts but never shows a window.
 
 ## Known limits
 
