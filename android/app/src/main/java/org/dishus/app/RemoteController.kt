@@ -110,7 +110,7 @@ class RemoteController(private val app: DishusApp, private val pcId: String) {
         while (currentCoroutineContext().isActive) {
             _ui.value = _ui.value.copy(status = "Connecting…", connected = false)
             val s = try {
-                app.core.connect(pcId, deviceName, app.prefs.stream)
+                app.core.connect(pcId, deviceName, app.prefs.toSend(app.prefs.stream))
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -332,7 +332,7 @@ class RemoteController(private val app: DishusApp, private val pcId: String) {
 
     fun applyStream(settings: StreamSettings) {
         app.prefs.stream = settings
-        send { it.setStream(settings) }
+        send { it.setStream(app.prefs.toSend(settings)) }
     }
 
     fun renew(days: Int) = send { it.renew(days.toUShort()) }

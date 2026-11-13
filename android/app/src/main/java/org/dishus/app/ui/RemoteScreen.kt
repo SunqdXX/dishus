@@ -130,7 +130,10 @@ private fun QuickSettings(app: DishusApp, c: RemoteController, onDismiss: () -> 
                 s.quality,
             ) { apply(s.copy(quality = it)) }
             Text("Resolution", style = MaterialTheme.typography.labelLarge)
-            ChipRow(listOf("Native" to 0, "1080p" to 1080, "720p" to 720), s.maxHeight.toInt()) { apply(s.copy(maxHeight = it.toUShort())) }
+            ChipRow(
+                listOf("Phone" to org.dishus.app.data.Prefs.PHONE_HEIGHT, "Native" to 0, "1080p" to 1080, "720p" to 720),
+                s.maxHeight.toInt(),
+            ) { apply(s.copy(maxHeight = it.toUShort())) }
             if (ui.monitors.size > 1) {
                 Text("Monitor", style = MaterialTheme.typography.labelLarge)
                 ChipRow(ui.monitors.map { it.name to it.index.toInt() }, s.monitor.toInt()) { apply(s.copy(monitor = it.toUByte())) }

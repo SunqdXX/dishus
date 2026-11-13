@@ -7,6 +7,12 @@ import uniffi.dishus_core.StreamSettings
 /** Non-secret preferences. Secrets live only in the vault. */
 class Prefs(context: Context) {
     private val sp = context.getSharedPreferences("dishus", Context.MODE_PRIVATE)
+    private val res = context.resources
+
+    companion object {
+        /** Resolution "Phone", the default: the shorter side of this phone's screen. */
+        const val PHONE_HEIGHT = 0xFFFF
+    }
 
     var lastPcId: String?
         get() = sp.getString("last_pc", null)
@@ -52,7 +58,7 @@ class Prefs(context: Context) {
             fps = sp.getInt("fps", 0).toUByte(),
             quality = runCatching { StreamQuality.valueOf(sp.getString("quality", "AUTO")!!) }
                 .getOrDefault(StreamQuality.AUTO),
-            maxHeight = sp.getInt("max_height", 0).toUShort(),
+            maxHeight = sp.getInt("max_height", PHONE_HEIGHT).toUShort(),
         )
         set(v) = sp.edit()
             .putInt("monitor", v.monitor.toInt())
@@ -60,4 +66,12 @@ class Prefs(context: Context) {
             .putString("quality", v.quality.name)
             .putInt("max_height", v.maxHeight.toInt())
             .apply()
+
+    /** [s] as sent to the PC: "Phone" becomes the screen's shorter side in pixels, read now so it
+     *  follows a foldable being opened or closed. The PC never scales up. */
+    fun toSend(s: StreamSettings): StreamSettings {
+        if (s.maxHeight.toInt() != PHONE_HEIGHT) return s
+        val h = res.displayMetrics.let { minOf(it.widthPixels, it.heightPixels) }
+        return s.copy(maxHeight = h.coerceIn(240, 4320).toUShort())
+    }
 }
