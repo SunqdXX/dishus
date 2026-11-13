@@ -47,6 +47,13 @@ pub fn inflight_limit(rtt: Duration, fps: u8) -> usize {
     (per_rtt + 2).clamp(4, 32)
 }
 
+/// Should this frame be dropped to keep latency bounded? While a keyframe is still in flight
+/// the frames queued behind it may use twice the limit: dropping them only forces another
+/// (large) keyframe, which queues the next frames again, a keyframe storm on slow links.
+fn over_limit(inflight: usize, limit: usize, key_in_flight: bool) -> bool {
+    inflight >= if key_in_flight { limit * 2 } else { limit }
+}
+
 /// Gate for "the next frame sent must be an IDR". Drops other frames meanwhile and keeps asking
 /// the encoder until a keyframe actually shows up.
 #[derive(Debug)]
@@ -398,6 +405,8 @@ struct FrameSender {
     /// Set by a stalled frame task; makes the next pushed frame wait for an IDR.
     need_key: Arc<AtomicBool>,
     stalled: Arc<AtomicU32>,
+    /// Keyframes sent and not yet delivered (see [`over_limit`]).
+    keys_inflight: Arc<AtomicUsize>,
     key: KeyGate,
     /// Current in-flight limit (see [`inflight_limit`]); updated every ABR tick.
     max_inflight: usize,
@@ -413,6 +422,7 @@ impl FrameSender {
             inflight: Arc::new(AtomicUsize::new(0)),
             need_key: Arc::new(AtomicBool::new(false)),
             stalled: Arc::new(AtomicU32::new(0)),
+            keys_inflight: Arc::new(AtomicUsize::new(0)),
             key: KeyGate::new(Instant::now()),
             max_inflight: 4,
             stats: TickStats::default(),
@@ -443,7 +453,8 @@ impl FrameSender {
         }
         let inflight = self.inflight.load(Ordering::Acquire);
         self.stats.peak_inflight = self.stats.peak_inflight.max(inflight);
-        if inflight >= self.max_inflight {
+        let key_in_flight = self.keys_inflight.load(Ordering::Acquire) > 0;
+        if over_limit(inflight, self.max_inflight, key_in_flight) {
             self.stats.dropped += 1;
             if self.key.require_key(now) {
                 ctl.force_keyframe();
@@ -462,8 +473,13 @@ impl FrameSender {
             monitor: self.monitor,
         };
         self.inflight.fetch_add(1, Ordering::AcqRel);
+        let keyframe = f.keyframe;
+        if keyframe {
+            self.keys_inflight.fetch_add(1, Ordering::AcqRel);
+        }
         let conn = self.conn.clone();
         let inflight = self.inflight.clone();
+        let keys_inflight = self.keys_inflight.clone();
         let need_key = self.need_key.clone();
         let stalled = self.stalled.clone();
         // Newer frames first when the link is congested? No: P-frames depend on their
@@ -497,6 +513,9 @@ impl FrameSender {
                 need_key.store(true, Ordering::Release);
             }
             inflight.fetch_sub(1, Ordering::AcqRel);
+            if keyframe {
+                keys_inflight.fetch_sub(1, Ordering::AcqRel);
+            }
         });
     }
 }
@@ -682,6 +701,14 @@ async fn video_task(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frames_behind_a_keyframe_get_twice_the_limit() {
+        assert!(!over_limit(6, 7, false));
+        assert!(over_limit(7, 7, false));
+        assert!(!over_limit(13, 7, true), "queued behind a keyframe: keep");
+        assert!(over_limit(14, 7, true), "still bounded");
+    }
 
     #[test]
     fn inflight_limit_grows_with_rtt() {
