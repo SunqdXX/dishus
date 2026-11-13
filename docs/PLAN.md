@@ -51,6 +51,29 @@ Mobile data, direct path, same video and settings (Native, Adaptive, Medium), RT
 One short run on a live mobile network, so this is noisy. Still bad: about 22 dropped frames
 and 4 keyframes a minute, and fps still changes 4 times a minute.
 
+## Sound (2026-11-14, Linux PC + Android, not released yet)
+
+PC audio to the phone, off until the phone turns it on (then remembered). Protocol version is
+the ALPN: `dishus/session/2` adds audio, released builds keep `session/1` and still work both
+ways (e2e test; the new client against the released 0.1.3 daemon fell back to session/1).
+Linux: a separate worker (`--capture-worker audio`) records the default output's monitor via
+PipeWire, Opus 48 kHz stereo 20 ms, 64 kbit/s, one QUIC datagram per packet; it restarts the
+capture when PipeWire drops it (seen twice in the first test, "target not found"). Under
+congestion Opus drops to 24 kbit/s; with video at its minimum, or more than ~100 ms queued,
+audio packets are dropped. Phone: MediaCodec Opus, low-latency AudioTrack, buffer trimmed to
+~60-80 ms (hard cap 120), speaker button, volume slider, silent during calls.
+
+Measured on the owner's phone: Wi-Fi 30 s, 0 lost, 0 dropped, mute/volume work, sound
+116-126 ms behind the picture (log only, no correction; the owner found it fine by ear).
+"Mobile data" 60 s with sound on: 2854 packets, 2 lost, 6 dropped, 7 underruns, buffer
+median 68 ms; video fps median 31, 17 PC drops, 3 keyframes, longest gap 2.9 s (a reconnect
+during the run). The app RTT median was 5 ms, so most of that run was probably on Wi-Fi:
+it does not prove video is unaffected on a real mobile link.
+
+Not done: Windows (WASAPI loopback + libopus, needs CI and a real Windows PC); one 4 s
+stretch at 38 packets/s on Wi-Fi was not explained; following a changed default output is
+untested.
+
 ## Next (none started; each needs the owner's go)
 
 1. Later (the owner postponed it on 2026-11-14): Windows video without a video processor, a
