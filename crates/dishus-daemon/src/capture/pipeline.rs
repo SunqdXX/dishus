@@ -1,5 +1,6 @@
 //! GStreamer capture → H.264 pipeline (runs inside the capture worker) with encoder
 //! auto-detection (NVENC → VA-API → x264 → openh264) and live bitrate / fps / keyframe control.
+//! Also the audio pipeline: the default output's monitor → Opus.
 
 use std::{
     os::fd::{IntoRawFd, OwnedFd},
@@ -312,7 +313,7 @@ fn start_one(
                 // Blocking write to the daemon: back-pressure ends at the leaky queue above,
                 // which drops raw frames, so the encoded reference chain stays intact.
                 on_frame(Frame {
-                    pts_us: buf.pts().map(|t| t.useconds()).unwrap_or(0),
+                    pts_us: monotonic_us(s.upcast_ref(), buf.pts()),
                     keyframe: !buf.flags().contains(gst::BufferFlags::DELTA_UNIT),
                     data: map.as_slice().to_vec(),
                 });
@@ -383,6 +384,148 @@ fn start_one(
             }
         })?;
     Ok(running)
+}
+
+/// A buffer's capture time on the system's monotonic clock (CLOCK_MONOTONIC, microseconds).
+/// Video and audio run in separate pipelines with their own clocks and base times; this puts
+/// both on one clock so the phone can compare them. Without a clock: now.
+fn monotonic_us(elem: &gst::Element, pts: Option<gst::ClockTime>) -> u64 {
+    let now = gst::glib::monotonic_time().max(0) as u64;
+    match (elem.clock(), elem.base_time(), pts) {
+        (Some(clock), Some(base), Some(pts)) => {
+            let age = clock.time().saturating_sub(base + pts);
+            now.saturating_sub(age.useconds())
+        }
+        _ => now,
+    }
+}
+
+/// Opus bitrates (kbit/s) the daemon may set; see `crate::audio`.
+pub const AUDIO_KBPS_RANGE: (u32, u32) = (16, 128);
+
+pub struct AudioRunning {
+    enc: gst::Element,
+    pipeline: gst::Pipeline,
+    stop: Arc<AtomicBool>,
+}
+
+impl AudioRunning {
+    pub fn set_bitrate(&self, kbps: u32) {
+        let kbps = kbps.clamp(AUDIO_KBPS_RANGE.0, AUDIO_KBPS_RANGE.1);
+        self.enc.set_property("bitrate", (kbps * 1000) as i32);
+    }
+}
+
+impl Drop for AudioRunning {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        let _ = self.pipeline.set_state(gst::State::Null);
+    }
+}
+
+/// One Opus packet (20 ms, 48 kHz stereo).
+pub struct AudioPacket {
+    pub pts_us: u64,
+    pub data: Vec<u8>,
+}
+
+/// Capture what the PC plays (the default output's monitor; follows the default when it
+/// changes) or, with `test`, a quiet 440 Hz tone, and encode it to Opus.
+pub fn start_audio(
+    test: bool,
+    kbps: u32,
+    on_packet: Arc<dyn Fn(AudioPacket) + Send + Sync>,
+    on_fail: OnFail,
+) -> Result<AudioRunning> {
+    for f in ["opusenc", "audioconvert", "audioresample"] {
+        if gst::ElementFactory::find(f).is_none() {
+            bail!("GStreamer element {f} missing (gst-plugins-base)");
+        }
+    }
+    let src = if test {
+        "audiotestsrc is-live=true wave=sine freq=440 volume=0.1".to_string()
+    } else {
+        if gst::ElementFactory::find("pipewiresrc").is_none() {
+            bail!("GStreamer element pipewiresrc missing (gst-plugin-pipewire)");
+        }
+        // stream.capture.sink: record the default sink's monitor, i.e. what the speakers play.
+        // Read-only: the PC's own sound is unchanged.
+        "pipewiresrc do-timestamp=true stream-properties=\"props,stream.capture.sink=true,\
+         node.name=dishus-audio,node.description=DiShus\""
+            .to_string()
+    };
+    let kbps = kbps.clamp(AUDIO_KBPS_RANGE.0, AUDIO_KBPS_RANGE.1);
+    let desc = format!(
+        "{src} ! queue max-size-time=100000000 max-size-buffers=0 max-size-bytes=0 \
+         leaky=downstream ! audioconvert ! audioresample ! \
+         audio/x-raw,rate=48000,channels=2 ! \
+         opusenc name=enc frame-size=20 bitrate={} inband-fec=true packet-loss-percentage=10 ! \
+         appsink name=sink sync=false max-buffers=8 drop=true",
+        kbps * 1000
+    );
+    tracing::debug!("audio pipeline: {desc}");
+    let pipeline = gst::parse::launch(&desc)
+        .context("building the audio pipeline")?
+        .downcast::<gst::Pipeline>()
+        .map_err(|_| anyhow!("not a pipeline"))?;
+    let enc = pipeline.by_name("enc").context("no encoder")?;
+    let appsink = pipeline
+        .by_name("sink")
+        .context("no sink")?
+        .downcast::<gst_app::AppSink>()
+        .map_err(|_| anyhow!("not an appsink"))?;
+    appsink.set_callbacks(
+        gst_app::AppSinkCallbacks::builder()
+            .new_sample(move |s| {
+                let sample = s.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                let buf = sample.buffer().ok_or(gst::FlowError::Error)?;
+                if buf.flags().contains(gst::BufferFlags::HEADER) || buf.size() == 0 {
+                    return Ok(gst::FlowSuccess::Ok);
+                }
+                let map = buf.map_readable().map_err(|_| gst::FlowError::Error)?;
+                on_packet(AudioPacket {
+                    pts_us: monotonic_us(s.upcast_ref(), buf.pts()),
+                    data: map.as_slice().to_vec(),
+                });
+                Ok(gst::FlowSuccess::Ok)
+            })
+            .build(),
+    );
+    pipeline
+        .set_state(gst::State::Playing)
+        .context("starting the audio pipeline")?;
+    let stop = Arc::new(AtomicBool::new(false));
+    let bus = pipeline.bus().context("no bus")?;
+    let (p, st) = (pipeline.clone(), stop.clone());
+    std::thread::Builder::new()
+        .name("gst-audio-bus".into())
+        .spawn(move || {
+            while !st.load(Ordering::SeqCst) {
+                let Some(msg) = bus.timed_pop_filtered(
+                    gst::ClockTime::from_mseconds(250),
+                    &[gst::MessageType::Error, gst::MessageType::Eos],
+                ) else {
+                    continue;
+                };
+                if st.load(Ordering::SeqCst) {
+                    break;
+                }
+                let why = match msg.view() {
+                    gst::MessageView::Error(e) => {
+                        format!("audio pipeline error: {} ({:?})", e.error(), e.debug())
+                    }
+                    _ => "audio pipeline ended (EOS)".into(),
+                };
+                let _ = p.set_state(gst::State::Null);
+                on_fail(why);
+                break;
+            }
+        })?;
+    Ok(AudioRunning {
+        enc,
+        pipeline,
+        stop,
+    })
 }
 
 /// Really encodes a moving test pattern with `enc` for about a second and returns the
@@ -508,6 +651,49 @@ mod tests {
         assert!(
             (165..=186).contains(&raised),
             "raised to 60: {raised} frames in 3 s"
+        );
+    }
+
+    /// The test tone comes out as 20 ms Opus packets stamped with the monotonic clock, and the
+    /// bitrate can change while it runs.
+    #[test]
+    fn audio_pipeline_makes_20ms_packets_on_the_monotonic_clock() {
+        init().unwrap();
+        if gst::ElementFactory::find("opusenc").is_none() {
+            eprintln!("no opusenc; skipping");
+            return;
+        }
+        let got = Arc::new(Mutex::new(Vec::<(u64, usize)>::new()));
+        let g = got.clone();
+        let run = start_audio(
+            true,
+            64,
+            Arc::new(move |p: AudioPacket| g.lock().unwrap().push((p.pts_us, p.data.len()))),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(1000));
+        run.set_bitrate(24);
+        std::thread::sleep(Duration::from_millis(1000));
+        let now = gst::glib::monotonic_time() as u64;
+        drop(run);
+        let v = got.lock().unwrap().clone();
+        assert!((90..=105).contains(&v.len()), "{} packets in 2 s", v.len());
+        for w in v.windows(2).skip(2) {
+            let d = w[1].0 as i64 - w[0].0 as i64;
+            assert!((15_000..=25_000).contains(&d), "pts step {d} us");
+        }
+        let last = v.last().unwrap().0;
+        assert!(
+            now - last < 200_000,
+            "pts {} ms behind now",
+            (now - last) / 1000
+        );
+        let size = |r: &[(u64, usize)]| r.iter().map(|x| x.1).sum::<usize>() / r.len();
+        let (hi, lo) = (size(&v[10..45]), size(&v[v.len() - 30..]));
+        assert!(
+            lo * 2 < hi,
+            "24 kbps packets ({lo} B) not smaller than 64 kbps ({hi} B)"
         );
     }
 

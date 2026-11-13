@@ -13,8 +13,8 @@ use bytes::Bytes;
 use dishus_core::{Client, NetConfig, PairedPc, Session, vault};
 use dishus_daemon::{
     backend::{
-        BoxFut, BoxFuture, CaptureProvider, CaptureSession, EncodedStream, InputSink, StreamConfig,
-        StreamControl, TrackedInput, VideoFrame,
+        AudioControl, AudioPacket, AudioStream, BoxFut, BoxFuture, CaptureProvider, CaptureSession,
+        EncodedStream, InputSink, StreamConfig, StreamControl, TrackedInput, VideoFrame,
     },
     config::Config,
     devices::DeviceStore,
@@ -159,6 +159,40 @@ impl CaptureProvider for FakeCapture {
     }
     fn setup_interactive(&self) -> BoxFuture<anyhow::Result<String>> {
         Box::pin(async { Ok("fake".into()) })
+    }
+    /// A 20 ms fake Opus packet stream, pts in microseconds from 1 s.
+    fn open_audio(&self) -> BoxFuture<anyhow::Result<AudioStream>> {
+        Box::pin(async {
+            struct NoCtl;
+            impl AudioControl for NoCtl {
+                fn set_bitrate(&self, _: u32) {}
+            }
+            let (tx, rx) = mpsc::channel(16);
+            let task = tokio::spawn(async move {
+                let mut tick = tokio::time::interval(Duration::from_millis(20));
+                for i in 0u64.. {
+                    tick.tick().await;
+                    let p = AudioPacket {
+                        pts_us: 1_000_000 + i * 20_000,
+                        data: Bytes::from_static(&[0xFC, 0xFF, 0xFE]),
+                    };
+                    if tx.send(p).await.is_err() {
+                        break;
+                    }
+                }
+            });
+            struct Abort(tokio::task::JoinHandle<()>);
+            impl Drop for Abort {
+                fn drop(&mut self) {
+                    self.0.abort();
+                }
+            }
+            Ok(AudioStream {
+                packets: rx,
+                control: Arc::new(NoCtl),
+                _guard: Box::new(Abort(task)),
+            })
+        })
     }
 }
 
@@ -850,4 +884,60 @@ async fn new_phone_gets_session2_old_phone_keeps_session1() {
     // session/2 asked for directly works too.
     let (conn, _send, _recv, _ep) = raw_session(&pc, ALPN_SESSION_V2).await;
     assert_eq!(conn.alpn(), ALPN_SESSION_V2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn audio_on_sends_numbered_datagrams_and_off_stops_them() {
+    let pc = Pc::start().await;
+    let (conn, mut send, mut recv, _ep) = raw_session(&pc, ALPN_SESSION_V2).await;
+    // Off by default: nothing arrives.
+    assert!(
+        timeout(Duration::from_millis(300), conn.read_datagram())
+            .await
+            .is_err()
+    );
+    write_frame(&mut send, &ClientMsg::SetAudio { on: true }, 4096)
+        .await
+        .unwrap();
+    timeout(Duration::from_secs(5), async {
+        loop {
+            let m: ServerMsg = read_frame(&mut recv, 65536).await.unwrap();
+            if let ServerMsg::AudioStarted {
+                sample_rate,
+                channels,
+            } = m
+            {
+                assert_eq!((sample_rate, channels), (48_000, 2));
+                break;
+            }
+        }
+    })
+    .await
+    .expect("AudioStarted");
+    let mut seqs = Vec::new();
+    for _ in 0..10 {
+        let d = timeout(Duration::from_secs(2), conn.read_datagram())
+            .await
+            .unwrap()
+            .unwrap();
+        let (h, opus) = dishus_proto::AudioHeader::decode(&d).unwrap();
+        assert_eq!(opus, [0xFC, 0xFF, 0xFE]);
+        seqs.push(h.seq);
+    }
+    assert!(seqs.windows(2).all(|w| w[1] == w[0] + 1), "{seqs:?}");
+    write_frame(&mut send, &ClientMsg::SetAudio { on: false }, 4096)
+        .await
+        .unwrap();
+    // Datagrams already in flight may still land; then silence.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    while timeout(Duration::from_millis(50), conn.read_datagram())
+        .await
+        .is_ok()
+    {}
+    assert!(
+        timeout(Duration::from_millis(500), conn.read_datagram())
+            .await
+            .is_err(),
+        "audio still flowing after SetAudio off"
+    );
 }

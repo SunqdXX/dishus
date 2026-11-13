@@ -17,9 +17,12 @@ use dishus_proto::{FrameError, MonitorInfo, read_frame, write_frame};
 
 use super::wire::{MAX_CMD_FRAME, MAX_WORKER_FRAME, WorkerCmd, WorkerEvent};
 use crate::backend::{
-    BoxFut, BoxFuture, CaptureProvider, CaptureSession, EncodedStream, StreamConfig, StreamControl,
-    VideoFrame,
+    AudioControl, AudioPacket, AudioStream, BoxFut, BoxFuture, CaptureProvider, CaptureSession,
+    EncodedStream, StreamConfig, StreamControl, VideoFrame,
 };
+
+/// The audio worker's first answer (capture running, or why not).
+const AUDIO_START_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[derive(Debug, Clone)]
 pub struct WorkerProvider {
@@ -173,6 +176,94 @@ impl CaptureProvider for WorkerProvider {
     fn setup_interactive(&self) -> BoxFuture<Result<String>> {
         let this = self.clone();
         Box::pin(async move { this.one_shot("setup").await })
+    }
+
+    /// A separate worker (`--capture-worker audio`): no GPU, and a monitor switch restarting
+    /// the video worker doesn't interrupt the sound.
+    fn open_audio(&self) -> BoxFuture<Result<AudioStream>> {
+        let this = self.clone();
+        Box::pin(async move {
+            let mut child = this.spawn("audio")?;
+            let mut stdout = child.stdout.take().context("worker stdout")?;
+            let mut stdin = child.stdin.take().context("worker stdin")?;
+            let first = tokio::time::timeout(
+                AUDIO_START_TIMEOUT,
+                read_frame::<_, WorkerEvent>(&mut stdout, MAX_WORKER_FRAME),
+            )
+            .await
+            .context("audio worker did not start")?
+            .map_err(|e| anyhow!("audio worker: {e}"))?;
+            match first {
+                WorkerEvent::AudioStarted => {}
+                WorkerEvent::Failed(s) => bail!("{s}"),
+                other => bail!("unexpected audio worker event {other:?}"),
+            }
+            let (tx, rx) = mpsc::channel::<AudioPacket>(16);
+            let reader = tokio::spawn(async move {
+                loop {
+                    match read_frame::<_, WorkerEvent>(&mut stdout, MAX_WORKER_FRAME).await {
+                        Ok(WorkerEvent::Audio { pts_us, data }) => {
+                            let p = AudioPacket {
+                                pts_us,
+                                data: Bytes::from(data),
+                            };
+                            // Never queue audio behind a slow consumer: late sound is useless.
+                            if let Err(mpsc::error::TrySendError::Closed(_)) = tx.try_send(p) {
+                                break;
+                            }
+                        }
+                        Ok(WorkerEvent::Failed(s)) => {
+                            tracing::error!("audio: {s}");
+                            break;
+                        }
+                        Ok(_) => {}
+                        Err(FrameError::Closed) => break,
+                        Err(e) => {
+                            tracing::error!("audio worker stream: {e}");
+                            break;
+                        }
+                    }
+                }
+            });
+            let (cmd_tx, mut cmd_rx) = mpsc::channel::<WorkerCmd>(8);
+            let writer = tokio::spawn(async move {
+                while let Some(c) = cmd_rx.recv().await {
+                    if write_frame(&mut stdin, &c, MAX_CMD_FRAME).await.is_err() {
+                        break;
+                    }
+                }
+            });
+            Ok(AudioStream {
+                packets: rx,
+                control: Arc::new(WorkerAudioControl(cmd_tx)),
+                _guard: Box::new(AudioGuard {
+                    _child: child,
+                    tasks: vec![reader, writer],
+                }),
+            })
+        })
+    }
+}
+
+struct WorkerAudioControl(mpsc::Sender<WorkerCmd>);
+
+impl AudioControl for WorkerAudioControl {
+    fn set_bitrate(&self, kbps: u32) {
+        let _ = self.0.try_send(WorkerCmd::Bitrate(kbps));
+    }
+}
+
+/// Kills the audio worker (kill_on_drop) and its pipe tasks.
+struct AudioGuard {
+    _child: Child,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
+}
+
+impl Drop for AudioGuard {
+    fn drop(&mut self) {
+        for t in &self.tasks {
+            t.abort();
+        }
     }
 }
 

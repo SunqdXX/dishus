@@ -297,6 +297,24 @@ pub struct EncodedStream {
     pub _guard: Box<dyn Send>,
 }
 
+/// One Opus packet (20 ms, 48 kHz stereo) with its capture time on the monotonic clock.
+#[derive(Debug, Clone)]
+pub struct AudioPacket {
+    pub pts_us: u64,
+    pub data: Bytes,
+}
+
+pub trait AudioControl: Send + Sync {
+    fn set_bitrate(&self, kbps: u32);
+}
+
+/// Running audio capture. Dropping it stops the capture.
+pub struct AudioStream {
+    pub packets: mpsc::Receiver<AudioPacket>,
+    pub control: Arc<dyn AudioControl>,
+    pub _guard: Box<dyn Send>,
+}
+
 /// An open capture permission (e.g. a portal ScreenCast session) covering one or more monitors.
 pub trait CaptureSession: Send {
     fn monitors(&self) -> Vec<MonitorInfo>;
@@ -310,6 +328,10 @@ pub trait CaptureProvider: Send + Sync {
     /// Open interactively while the user is at the PC, storing whatever lets later `open()`
     /// calls succeed without a prompt. Returns a human-readable summary.
     fn setup_interactive(&self) -> BoxFuture<anyhow::Result<String>>;
+    /// Start capturing what the PC plays. Needs no permission dialog.
+    fn open_audio(&self) -> BoxFuture<anyhow::Result<AudioStream>> {
+        Box::pin(async { Err(anyhow::anyhow!("audio capture is not available on this PC")) })
+    }
 }
 
 /// Capture provider used when the daemon is built without capture or none works.

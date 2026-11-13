@@ -6,7 +6,7 @@
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -18,12 +18,16 @@ use tokio::{sync::mpsc, time::timeout};
 use dishus_proto::{
     ALPN_SESSION_V2, ByeReason, CAPTURE_OPEN_TIMEOUT_MS, ClientMsg, FrameError,
     HEARTBEAT_INTERVAL_MS, MAX_CONTROL_FRAME, MonitorInfo, NoticeKind, PROTO_VERSION,
-    SESSION_IDLE_TIMEOUT_MS, ServerMsg, StreamParams, VideoHeader, read_frame,
-    video::FLAG_KEYFRAME, write_frame,
+    SESSION_IDLE_TIMEOUT_MS, ServerMsg, StreamParams, VideoHeader,
+    audio::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AudioHeader},
+    read_frame,
+    video::FLAG_KEYFRAME,
+    write_frame,
 };
 
 use crate::{
     abr::{self, Abr, TickStats},
+    audio::{self as audio_policy, AudioPolicy, Dropped, Pressure},
     backend::{CaptureSession, EncodedStream, StreamConfig, StreamControl, VideoFrame},
     state::AppState,
 };
@@ -230,6 +234,8 @@ pub async fn handle(state: Arc<AppState>, conn: Connection) -> Result<()> {
         .ok();
 
     let (vid_tx, vid_rx) = mpsc::channel::<VideoCmd>(16);
+    // The video controller's view of the link, for the audio sender.
+    let pressure = Arc::new(AtomicU8::new(Pressure::Clean as u8));
     let video = capture.map(|cap| {
         tokio::spawn(video_task(
             conn.clone(),
@@ -238,8 +244,16 @@ pub async fn handle(state: Arc<AppState>, conn: Connection) -> Result<()> {
             vid_rx,
             out_tx.clone(),
             state.config.video.max_bitrate_kbps,
+            pressure.clone(),
         ))
     });
+    let mut audio = AudioSlot {
+        conn: conn.clone(),
+        state: state.clone(),
+        pressure,
+        out: out_tx.clone(),
+        task: None,
+    };
 
     // Reader task: a frame half-read when some other select! branch fires would be lost (and
     // the stream misparsed), so reading never happens inside the select below.
@@ -274,7 +288,7 @@ pub async fn handle(state: Arc<AppState>, conn: Connection) -> Result<()> {
                 };
                 last_rx = tokio::time::Instant::now();
                 held_released = false;
-                match handle_msg(&state, &peer, v2, msg, &out_tx, &vid_tx).await {
+                match handle_msg(&state, &peer, v2, msg, &out_tx, &vid_tx, &mut audio).await {
                     Ok(true) => {}
                     Ok(false) => break ByeReason::Normal,
                     Err(e) => {
@@ -316,6 +330,7 @@ pub async fn handle(state: Arc<AppState>, conn: Connection) -> Result<()> {
     if let Some(v) = video {
         v.abort();
     }
+    drop(audio);
     let _ = out_tx.send(ServerMsg::Bye { reason }).await;
     drop(out_tx);
     let _ = timeout(Duration::from_millis(1500), writer).await;
@@ -339,6 +354,7 @@ async fn handle_msg(
     msg: ClientMsg,
     out: &mpsc::Sender<ServerMsg>,
     vid: &mpsc::Sender<VideoCmd>,
+    audio: &mut AudioSlot,
 ) -> Result<bool> {
     let input_res = {
         let mut input = state.input.lock().expect("input lock");
@@ -384,16 +400,7 @@ async fn handle_msg(
         },
         ClientMsg::Bye => return Ok(false),
         ClientMsg::SetAudio { .. } if !v2 => bail!("SetAudio on a session/1 connection"),
-        ClientMsg::SetAudio { on } => {
-            if on {
-                let _ = out
-                    .send(ServerMsg::Notice {
-                        kind: NoticeKind::AudioUnavailable,
-                        message: "audio is not implemented on this PC yet".into(),
-                    })
-                    .await;
-            }
-        }
+        ClientMsg::SetAudio { on } => audio.set(on),
         ClientMsg::Key { .. }
         | ClientMsg::MouseMove { .. }
         | ClientMsg::MouseButton { .. }
@@ -544,6 +551,136 @@ impl FrameSender {
     }
 }
 
+/// PC audio for one session: off until the phone asks, stopped (worker killed) when it says
+/// off or the session ends.
+struct AudioSlot {
+    conn: Connection,
+    state: Arc<AppState>,
+    pressure: Arc<AtomicU8>,
+    out: mpsc::Sender<ServerMsg>,
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl AudioSlot {
+    fn set(&mut self, on: bool) {
+        if !on {
+            if let Some(t) = self.task.take() {
+                t.abort();
+                tracing::info!("audio off");
+            }
+        } else if self.task.as_ref().is_none_or(|t| t.is_finished()) {
+            self.task = Some(tokio::spawn(audio_task(
+                self.conn.clone(),
+                self.state.clone(),
+                self.pressure.clone(),
+                self.out.clone(),
+            )));
+        }
+    }
+}
+
+impl Drop for AudioSlot {
+    fn drop(&mut self) {
+        if let Some(t) = self.task.take() {
+            t.abort();
+        }
+    }
+}
+
+async fn audio_unavailable(out: &mpsc::Sender<ServerMsg>, why: String) {
+    let _ = out
+        .send(ServerMsg::Notice {
+            kind: NoticeKind::AudioUnavailable,
+            message: truncate(&why),
+        })
+        .await;
+}
+
+/// Capture, then one datagram per Opus packet, under the rules in [`crate::audio`].
+async fn audio_task(
+    conn: Connection,
+    state: Arc<AppState>,
+    pressure: Arc<AtomicU8>,
+    out: mpsc::Sender<ServerMsg>,
+) {
+    if conn.max_datagram_size().is_none() {
+        return audio_unavailable(&out, "the phone does not accept audio datagrams".into()).await;
+    }
+    let mut stream = match state.capture.open_audio().await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("audio unavailable: {e:#}");
+            return audio_unavailable(&out, format!("{e:#}")).await;
+        }
+    };
+    tracing::info!("audio on (opus, {} kbps)", audio_policy::HIGH_KBPS);
+    let _ = out
+        .send(ServerMsg::AudioStarted {
+            sample_rate: AUDIO_SAMPLE_RATE,
+            channels: AUDIO_CHANNELS,
+        })
+        .await;
+    let mut policy = AudioPolicy::default();
+    let mut seq = 0u32;
+    // Over ~10 s: sent, dropped under congestion, dropped for queueing, too big for a datagram.
+    let (mut sent, mut congested, mut queued_out, mut too_big) = (0u32, 0u32, 0u32, 0u32);
+    let mut ticks = 0u32;
+    let mut tick = tokio::time::interval(Duration::from_millis(abr::TICK_MS));
+    loop {
+        tokio::select! {
+            p = stream.packets.recv() => {
+                let Some(p) = p else {
+                    return audio_unavailable(&out, "audio capture stopped".into()).await;
+                };
+                seq = seq.wrapping_add(1);
+                let queued = audio_policy::DATAGRAM_SEND_BUFFER
+                    .saturating_sub(conn.datagram_send_buffer_space());
+                match audio_policy::admit(Pressure::load(&pressure), queued) {
+                    Err(Dropped::Congestion) => congested += 1,
+                    Err(Dropped::Queue) => queued_out += 1,
+                    Ok(()) => {
+                        let mut buf = Vec::with_capacity(16 + p.data.len());
+                        buf.extend_from_slice(&AudioHeader { seq, pts_us: p.pts_us }.encode());
+                        buf.extend_from_slice(&p.data);
+                        if buf.len() > conn.max_datagram_size().unwrap_or(0) {
+                            too_big += 1;
+                        } else {
+                            match conn.send_datagram(buf.into()) {
+                                Ok(()) => sent += 1,
+                                Err(iroh::endpoint::SendDatagramError::ConnectionLost(_)) => return,
+                                Err(e) => {
+                                    tracing::warn!("audio datagram: {e}");
+                                    return audio_unavailable(&out, format!("audio: {e}")).await;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            _ = tick.tick() => {
+                if let Some(k) = policy.tick(Pressure::load(&pressure)) {
+                    tracing::debug!("audio bitrate -> {k} kbps");
+                    stream.control.set_bitrate(k);
+                }
+                ticks += 1;
+                if ticks * abr::TICK_MS as u32 >= 10_000 {
+                    let msg = format!(
+                        "audio: {sent} packets sent, dropped {congested} (congestion) \
+                         {queued_out} (queue) {too_big} (too big), {} kbps",
+                        policy.kbps
+                    );
+                    if congested + queued_out + too_big > 0 {
+                        tracing::info!("{msg}");
+                    } else {
+                        tracing::debug!("{msg}");
+                    }
+                    (sent, congested, queued_out, too_big, ticks) = (0, 0, 0, 0, 0);
+                }
+            }
+        }
+    }
+}
+
 async fn video_task(
     conn: Connection,
     mut capture: Box<dyn CaptureSession>,
@@ -551,6 +688,7 @@ async fn video_task(
     mut cmds: mpsc::Receiver<VideoCmd>,
     out: mpsc::Sender<ServerMsg>,
     ceiling_kbps: u32,
+    pressure: Arc<AtomicU8>,
 ) {
     'restart: loop {
         let monitors = capture.monitors();
@@ -722,6 +860,7 @@ async fn video_task(
                         }
                     }
                     let ch = abr.tick(st);
+                    abr.pressure().store(&pressure);
                     if let Some(b) = ch.bitrate {
                         stream.control.set_bitrate(b);
                     }

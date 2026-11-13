@@ -76,6 +76,8 @@ pub struct Abr {
     /// Clean ticks needed before 30 -> 60 (see [`UP_AFTER_MIN`]).
     up_after: u32,
     rtts: VecDeque<u32>,
+    /// The last tick saw congestion (for [`Abr::pressure`]).
+    congested: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -96,6 +98,17 @@ impl Abr {
             good_ticks: 0,
             up_after: UP_AFTER_MIN,
             rtts: VecDeque::with_capacity(RTT_WINDOW),
+            congested: false,
+        }
+    }
+
+    /// How the link looked at the last tick, for the audio sender.
+    pub fn pressure(&self) -> crate::audio::Pressure {
+        use crate::audio::Pressure;
+        match (self.congested, self.bitrate <= self.b.min) {
+            (false, _) => Pressure::Clean,
+            (true, false) => Pressure::Congested,
+            (true, true) => Pressure::Starved,
         }
     }
 
@@ -107,6 +120,7 @@ impl Abr {
             || s.stalled > 0
             || s.peak_inflight >= near_limit
             || self.link_congested(&s);
+        self.congested = congested;
         if congested {
             if self.adaptive_fps && self.fps == 60 {
                 self.fps = 30;
@@ -275,6 +289,26 @@ mod tests {
             a.tick(net(150, 100, 0));
         }
         assert!(a.bitrate >= br, "no more back-offs at a steady 150 ms");
+    }
+
+    #[test]
+    fn pressure_for_audio() {
+        use crate::audio::Pressure;
+        let mut a = Abr::new(bounds(Quality::Medium, 20_000), 0);
+        a.tick(TickStats::default());
+        assert_eq!(a.pressure(), Pressure::Clean);
+        let drop1 = TickStats {
+            dropped: 1,
+            ..Default::default()
+        };
+        a.tick(drop1);
+        assert_eq!(a.pressure(), Pressure::Congested);
+        for _ in 0..20 {
+            a.tick(drop1);
+        }
+        assert_eq!(a.pressure(), Pressure::Starved, "video at its floor");
+        a.tick(TickStats::default());
+        assert_eq!(a.pressure(), Pressure::Clean);
     }
 
     #[test]

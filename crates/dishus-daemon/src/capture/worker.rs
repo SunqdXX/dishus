@@ -133,8 +133,52 @@ pub async fn run(mode: &str, opts: WorkerOptions) -> Result<()> {
             Ok(())
         }
         "session" => session(opts, out, encoders).await,
+        "audio" => audio(opts, out).await,
         other => anyhow::bail!("unknown worker mode {other}"),
     }
+}
+
+/// Audio worker: Opus packets out until stdin closes. No portal: PipeWire lets the user's own
+/// processes record the output's monitor. Commands: `Bitrate` (kbit/s); anything else ignored.
+async fn audio(opts: WorkerOptions, out: Out) -> Result<()> {
+    let (o1, o2) = (out.clone(), out.clone());
+    let running = pipeline::start_audio(
+        opts.test_source,
+        crate::audio::HIGH_KBPS,
+        Arc::new(move |p: pipeline::AudioPacket| {
+            o1.send(&WorkerEvent::Audio {
+                pts_us: p.pts_us,
+                data: p.data,
+            });
+        }),
+        Arc::new(move |why: String| {
+            o2.send(&WorkerEvent::Failed(why));
+        }),
+    );
+    let running = match running {
+        Ok(r) => r,
+        Err(e) => {
+            out.send(&WorkerEvent::Failed(format!("{e:#}")));
+            return Ok(());
+        }
+    };
+    if !out.send(&WorkerEvent::AudioStarted) {
+        return Ok(());
+    }
+    let mut stdin = tokio::io::stdin();
+    loop {
+        match read_frame::<_, WorkerCmd>(&mut stdin, MAX_CMD_FRAME).await {
+            Ok(WorkerCmd::Bitrate(k)) => running.set_bitrate(k),
+            Ok(WorkerCmd::Stop) | Err(FrameError::Closed) => break,
+            Ok(_) => {}
+            Err(e) => {
+                tracing::error!("audio worker: bad command: {e}");
+                break;
+            }
+        }
+    }
+    drop(running);
+    Ok(())
 }
 
 async fn session(opts: WorkerOptions, out: Out, encoders: Vec<pipeline::Encoder>) -> Result<()> {

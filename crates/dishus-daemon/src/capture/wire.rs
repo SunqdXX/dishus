@@ -18,6 +18,7 @@ pub enum WorkerCmd {
     },
     Stop,
     Keyframe,
+    /// kbit/s; for the audio worker, the Opus bitrate.
     Bitrate(u32),
     Fps(u8),
 }
@@ -39,6 +40,13 @@ pub enum WorkerEvent {
     Failed(String),
     /// Result line of `setup` / `probe` modes.
     Info(String),
+    /// Audio worker (`--capture-worker audio`): capture runs, packets follow.
+    AudioStarted,
+    /// One Opus packet, 20 ms.
+    Audio {
+        pts_us: u64,
+        data: Vec<u8>,
+    },
 }
 
 impl Validate for WorkerCmd {
@@ -54,6 +62,11 @@ impl Validate for WorkerEvent {
                 Err("too many monitors")
             }
             WorkerEvent::Frame { data, .. } if data.is_empty() => Err("empty frame"),
+            WorkerEvent::Audio { data, .. }
+                if data.is_empty() || data.len() > dishus_proto::audio::MAX_OPUS_PACKET =>
+            {
+                Err("bad audio packet")
+            }
             WorkerEvent::Failed(s) | WorkerEvent::Info(s) if s.len() > 4096 => {
                 Err("message too long")
             }
