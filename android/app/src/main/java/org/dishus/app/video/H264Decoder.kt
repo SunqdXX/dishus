@@ -26,6 +26,19 @@ class H264Decoder(private val surface: Surface) {
     @Volatile private var running = false
     /** Frames handed to the Surface (for the video stats log). */
     val rendered = java.util.concurrent.atomic.AtomicLong()
+    /** Feed time per pts, for the decode-time stats (feed to rendered). */
+    private val fedAt = java.util.concurrent.ConcurrentHashMap<Long, Long>()
+    private val decodeLock = Any()
+    private var decodeSumNs = 0L
+    private var decodeMaxNs = 0L
+    private var decodeCount = 0
+
+    /** Average and max decode time in ms since the last call, or null without frames. */
+    fun takeDecodeStats(): Pair<Double, Double>? = synchronized(decodeLock) {
+        val r = if (decodeCount == 0) null else (decodeSumNs / 1e6 / decodeCount) to (decodeMaxNs / 1e6)
+        decodeSumNs = 0; decodeMaxNs = 0; decodeCount = 0
+        r
+    }
     /** Set by the output thread when the codec failed; the next feed() resets it. */
     @Volatile private var broken = false
 
@@ -57,6 +70,8 @@ class H264Decoder(private val surface: Surface) {
                 return false
             }
             buf.put(data)
+            if (fedAt.size > 256) fedAt.clear() // frames the codec never output
+            fedAt[ptsUs] = System.nanoTime()
             c.queueInputBuffer(idx, 0, data.size, ptsUs, if (keyframe) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
             return true
         } catch (e: Exception) {
@@ -75,7 +90,15 @@ class H264Decoder(private val surface: Surface) {
         while (running) {
             try {
                 val out = c.dequeueOutputBuffer(info, 10_000)
-                if (out >= 0) { c.releaseOutputBuffer(out, true); rendered.incrementAndGet() }
+                if (out >= 0) {
+                    c.releaseOutputBuffer(out, true); rendered.incrementAndGet()
+                    fedAt.remove(info.presentationTimeUs)?.let { t ->
+                        val ns = System.nanoTime() - t
+                        synchronized(decodeLock) {
+                            decodeSumNs += ns; decodeCount++; if (ns > decodeMaxNs) decodeMaxNs = ns
+                        }
+                    }
+                }
                 // else: timeout, or format / buffers changed: just loop
             } catch (e: IllegalStateException) { // includes CodecException
                 if (running) android.util.Log.w("DishusVideo", "decoder output failed: $e")

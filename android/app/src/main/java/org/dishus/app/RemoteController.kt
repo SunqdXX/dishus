@@ -216,15 +216,30 @@ class RemoteController(private val app: DishusApp, private val pcId: String) {
         var lastKfRequest = 0L
         // Once a second in logcat (tag DishusVideo): where frames stop when the picture freezes.
         var rx = 0; var fed = 0; var rejected = 0; var noDecoder = 0; var keys = 0; var kfReq = 0
+        var bytes = 0L
+        // Delay growth: arrival minus capture time (different clocks), relative to the session's
+        // fastest frame. 0 = as fast as the best frame; rising = frames are queueing somewhere.
+        var baseDelayUs = Long.MAX_VALUE; var delaySumUs = 0L; var delayMaxUs = 0L
         var lastLog = System.currentTimeMillis()
         while (true) {
             val f = s.nextVideo() ?: return
             rx++; if (f.keyframe) keys++
+            bytes += f.data.size
+            val delayUs = android.os.SystemClock.elapsedRealtimeNanos() / 1000 - f.ptsUs.toLong()
+            if (delayUs < baseDelayUs) baseDelayUs = delayUs
+            val extra = delayUs - baseDelayUs
+            delaySumUs += extra; if (extra > delayMaxUs) delayMaxUs = extra
             val now = System.currentTimeMillis()
             if (now - lastLog >= 1000) {
+                val secs = (now - lastLog) / 1000.0
+                val dec = decoder?.takeDecodeStats()
                 Log.i("DishusVideo", "rx=$rx keys=$keys fed=$fed rejected=$rejected noDecoder=$noDecoder kfReq=$kfReq " +
-                    "rendered=${decoder?.rendered?.getAndSet(0)} surface=${surface != null}")
+                    "rendered=${decoder?.rendered?.getAndSet(0)} surface=${surface != null} " +
+                    "kbps=${(bytes * 8 / 1000 / secs).toInt()} delay_avg=${delaySumUs / 1000 / rx}ms " +
+                    "delay_max=${delayMaxUs / 1000}ms decode_avg=${dec?.first?.let { "%.1f".format(it) }}ms " +
+                    "decode_max=${dec?.second?.let { "%.1f".format(it) }}ms rtt=${s.rttMs()}ms path=${s.path()}")
                 rx = 0; fed = 0; rejected = 0; noDecoder = 0; keys = 0; kfReq = 0; lastLog = now
+                bytes = 0; delaySumUs = 0; delayMaxUs = 0
             }
             val d = decoder ?: run { noDecoder++; null } ?: continue
             val ok = try {
