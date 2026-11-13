@@ -140,23 +140,34 @@ pub async fn run(mode: &str, opts: WorkerOptions) -> Result<()> {
 
 /// Audio worker: Opus packets out until stdin closes. No portal: PipeWire lets the user's own
 /// processes record the output's monitor. Commands: `Bitrate` (kbit/s); anything else ignored.
+///
+/// pipewiresrc marks its stream `node.dont-reconnect`, so when WirePlumber re-links streams
+/// (seen on a real PC: "target not found", twice in two minutes) the capture just dies. It is
+/// restarted here (a gap of a few hundred ms); only repeated failures end the worker.
 async fn audio(opts: WorkerOptions, out: Out) -> Result<()> {
-    let (o1, o2) = (out.clone(), out.clone());
-    let running = pipeline::start_audio(
-        opts.test_source,
-        crate::audio::HIGH_KBPS,
-        Arc::new(move |p: pipeline::AudioPacket| {
-            o1.send(&WorkerEvent::Audio {
-                pts_us: p.pts_us,
-                data: p.data,
-            });
-        }),
-        Arc::new(move |why: String| {
-            o2.send(&WorkerEvent::Failed(why));
-        }),
-    );
-    let running = match running {
-        Ok(r) => r,
+    const MAX_FAILS: usize = 5;
+    const FAIL_WINDOW: std::time::Duration = std::time::Duration::from_secs(30);
+    let (fail_tx, mut fail_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let mut kbps = crate::audio::HIGH_KBPS;
+    let start = |kbps: u32| {
+        let o = out.clone();
+        let f = fail_tx.clone();
+        pipeline::start_audio(
+            opts.test_source,
+            kbps,
+            Arc::new(move |p: pipeline::AudioPacket| {
+                o.send(&WorkerEvent::Audio {
+                    pts_us: p.pts_us,
+                    data: p.data,
+                });
+            }),
+            Arc::new(move |why: String| {
+                let _ = f.send(why);
+            }),
+        )
+    };
+    let mut running = match start(kbps) {
+        Ok(r) => Some(r),
         Err(e) => {
             out.send(&WorkerEvent::Failed(format!("{e:#}")));
             return Ok(());
@@ -165,15 +176,59 @@ async fn audio(opts: WorkerOptions, out: Out) -> Result<()> {
     if !out.send(&WorkerEvent::AudioStarted) {
         return Ok(());
     }
+    // Test hook (test tone only): report a capture failure every N ms, to exercise the restart.
+    if opts.test_source
+        && let Some(ms) = std::env::var("DISHUS_TEST_AUDIO_FAIL_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+    {
+        let f = fail_tx.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+                if f.send("test failure".into()).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+    let mut fails: std::collections::VecDeque<std::time::Instant> = Default::default();
     let mut stdin = tokio::io::stdin();
     loop {
-        match read_frame::<_, WorkerCmd>(&mut stdin, MAX_CMD_FRAME).await {
-            Ok(WorkerCmd::Bitrate(k)) => running.set_bitrate(k),
-            Ok(WorkerCmd::Stop) | Err(FrameError::Closed) => break,
-            Ok(_) => {}
-            Err(e) => {
-                tracing::error!("audio worker: bad command: {e}");
-                break;
+        tokio::select! {
+            cmd = read_frame::<_, WorkerCmd>(&mut stdin, MAX_CMD_FRAME) => match cmd {
+                Ok(WorkerCmd::Bitrate(k)) => {
+                    kbps = k;
+                    if let Some(r) = &running {
+                        r.set_bitrate(k);
+                    }
+                }
+                Ok(WorkerCmd::Stop) | Err(FrameError::Closed) => break,
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::error!("audio worker: bad command: {e}");
+                    break;
+                }
+            },
+            Some(why) = fail_rx.recv() => {
+                running = None;
+                let now = std::time::Instant::now();
+                fails.retain(|t| now.duration_since(*t) < FAIL_WINDOW);
+                fails.push_back(now);
+                if fails.len() >= MAX_FAILS {
+                    out.send(&WorkerEvent::Failed(format!("{why} ({MAX_FAILS} times in 30 s)")));
+                    break;
+                }
+                tracing::warn!("audio capture stopped ({why}); restarting");
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                while fail_rx.try_recv().is_ok() {} // stale reports from the old pipeline
+                match start(kbps) {
+                    Ok(r) => running = Some(r),
+                    Err(e) => {
+                        out.send(&WorkerEvent::Failed(format!("{e:#}")));
+                        break;
+                    }
+                }
             }
         }
     }
