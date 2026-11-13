@@ -30,6 +30,10 @@ class AudioPlayer(context: Context) {
         const val FRAME_BYTES = 2 * CHANNELS
         const val START_MS = 40
         const val MAX_MS = 120
+        /** Above this for [TRIM_AFTER_MS] straight, one packet is dropped: start-up and clock
+         *  drift leave the buffer fuller than needed, and nothing else would ever drain it. */
+        const val TRIM_ABOVE_MS = 60
+        const val TRIM_AFTER_MS = 1000L
         const val TAG = "DishusAudio"
     }
 
@@ -94,7 +98,8 @@ class AudioPlayer(context: Context) {
 
     // Once a second: packets, lost (seq gaps), dropped (buffer over MAX_MS), underruns,
     // buffer ms, and the sound-vs-picture offset.
-    private var rx = 0; private var lost = 0; private var dropped = 0
+    private var rx = 0; private var lost = 0; private var dropped = 0; private var trimmed = 0
+    private var fullSince = 0L
     private var lastUnderruns = 0
     private var audioDelaySumUs = 0L
     private var lastLog = SystemClock.elapsedRealtime()
@@ -150,6 +155,14 @@ class AudioPlayer(context: Context) {
                 dropped++
                 continue
             }
+            if (playing && queuedMs() > TRIM_ABOVE_MS) {
+                val now = SystemClock.elapsedRealtime()
+                if (fullSince == 0L) fullSince = now
+                else if (now - fullSince >= TRIM_AFTER_MS) {
+                    trimmed++; fullSince = now
+                    continue
+                }
+            } else fullSince = 0L
             val w = track.write(pcm, 0, n, AudioTrack.WRITE_NON_BLOCKING)
             if (w > 0) framesWritten += w / FRAME_BYTES
             if (!playing && queuedMs() >= START_MS) {
@@ -166,18 +179,19 @@ class AudioPlayer(context: Context) {
         val underruns = runCatching { track.underrunCount }.getOrDefault(0)
         // Output latency: frames written but not yet heard, from the track's own timestamp.
         val outMs = if (track.getTimestamp(ts)) {
-            val sincePresented = (SystemClock.elapsedRealtimeNanos() - ts.nanoTime) / 1_000_000
+            // AudioTimestamp.nanoTime is on System.nanoTime's clock (CLOCK_MONOTONIC).
+            val sincePresented = (System.nanoTime() - ts.nanoTime) / 1_000_000
             ((framesWritten - ts.framePosition) * 1000 / RATE - sincePresented).coerceAtLeast(0)
         } else queuedMs()
         // Sound vs picture: (arrival - capture) of audio plus its time to the speaker, minus the
         // same for video (arrival - capture; decode adds a few ms). The PC/phone clock offset
         // is in both and cancels. Positive = sound later than picture.
         val offset = videoDelayUs?.let { ((audioDelaySumUs / rx) - it) / 1000 + outMs }
-        Log.i(TAG, "rx=$rx lost=$lost dropped=$dropped underruns=${underruns - lastUnderruns} " +
+        Log.i(TAG, "rx=$rx lost=$lost dropped=$dropped trimmed=$trimmed underruns=${underruns - lastUnderruns} " +
             "buffer=${queuedMs()}ms out=${outMs}ms av_offset=${offset?.let { "${it}ms" } ?: "-"} " +
             "vol=${if (ducked) 0f else volume}")
         lastUnderruns = underruns
-        rx = 0; lost = 0; dropped = 0; audioDelaySumUs = 0; lastLog = now
+        rx = 0; lost = 0; dropped = 0; trimmed = 0; audioDelaySumUs = 0; lastLog = now
     }
 
     fun release() {
