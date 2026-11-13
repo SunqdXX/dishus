@@ -16,9 +16,10 @@ use iroh::endpoint::{Connection, SendStream};
 use tokio::{sync::mpsc, time::timeout};
 
 use dishus_proto::{
-    ByeReason, CAPTURE_OPEN_TIMEOUT_MS, ClientMsg, FrameError, HEARTBEAT_INTERVAL_MS,
-    MAX_CONTROL_FRAME, MonitorInfo, NoticeKind, PROTO_VERSION, SESSION_IDLE_TIMEOUT_MS, ServerMsg,
-    StreamParams, VideoHeader, read_frame, video::FLAG_KEYFRAME, write_frame,
+    ALPN_SESSION_V2, ByeReason, CAPTURE_OPEN_TIMEOUT_MS, ClientMsg, FrameError,
+    HEARTBEAT_INTERVAL_MS, MAX_CONTROL_FRAME, MonitorInfo, NoticeKind, PROTO_VERSION,
+    SESSION_IDLE_TIMEOUT_MS, ServerMsg, StreamParams, VideoHeader, read_frame,
+    video::FLAG_KEYFRAME, write_frame,
 };
 
 use crate::{
@@ -159,6 +160,8 @@ pub async fn handle(state: Arc<AppState>, conn: Connection) -> Result<()> {
         bail!("peer no longer allowed");
     }
     let device = state.device(&peer).context("device vanished")?;
+    // session/2 phones may ask for audio; to a session/1 phone nothing new is ever sent.
+    let v2 = conn.alpn() == ALPN_SESSION_V2;
 
     let (send, mut recv) = timeout(HELLO_TIMEOUT, conn.accept_bi())
         .await
@@ -271,7 +274,7 @@ pub async fn handle(state: Arc<AppState>, conn: Connection) -> Result<()> {
                 };
                 last_rx = tokio::time::Instant::now();
                 held_released = false;
-                match handle_msg(&state, &peer, msg, &out_tx, &vid_tx).await {
+                match handle_msg(&state, &peer, v2, msg, &out_tx, &vid_tx).await {
                     Ok(true) => {}
                     Ok(false) => break ByeReason::Normal,
                     Err(e) => {
@@ -332,6 +335,7 @@ fn truncate(s: &str) -> String {
 async fn handle_msg(
     state: &AppState,
     peer: &iroh::EndpointId,
+    v2: bool,
     msg: ClientMsg,
     out: &mpsc::Sender<ServerMsg>,
     vid: &mpsc::Sender<VideoCmd>,
@@ -379,6 +383,17 @@ async fn handle_msg(
             }
         },
         ClientMsg::Bye => return Ok(false),
+        ClientMsg::SetAudio { .. } if !v2 => bail!("SetAudio on a session/1 connection"),
+        ClientMsg::SetAudio { on } => {
+            if on {
+                let _ = out
+                    .send(ServerMsg::Notice {
+                        kind: NoticeKind::AudioUnavailable,
+                        message: "audio is not implemented on this PC yet".into(),
+                    })
+                    .await;
+            }
+        }
         ClientMsg::Key { .. }
         | ClientMsg::MouseMove { .. }
         | ClientMsg::MouseButton { .. }

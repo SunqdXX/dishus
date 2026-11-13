@@ -19,7 +19,7 @@ use iroh::{
     protocol::IncomingFilterOutcome,
 };
 
-use dishus_proto::{ALPN_PAIR, ALPN_SESSION};
+use dishus_proto::{ALPN_PAIR, ALPN_SESSION, ALPN_SESSION_V2};
 
 use crate::state::AppState;
 
@@ -32,9 +32,14 @@ impl fmt::Debug for Gate {
     }
 }
 
+/// Either session version: the same allowlist and the same refusal reasons apply.
+fn is_session(alpn: &[u8]) -> bool {
+    alpn == ALPN_SESSION || alpn == ALPN_SESSION_V2
+}
+
 /// Pure decision used by the hook (also unit-tested).
 pub fn admit(state: &AppState, alpn: &[u8], peer: &iroh::EndpointId) -> bool {
-    if alpn == ALPN_SESSION {
+    if is_session(alpn) {
         state.is_session_allowed(peer)
     } else if alpn == ALPN_PAIR {
         state.is_pairing_open()
@@ -54,7 +59,7 @@ impl EndpointHooks for Gate {
                 peer.fmt_short(),
                 String::from_utf8_lossy(conn.alpn())
             );
-            let code = if conn.alpn() == ALPN_SESSION {
+            let code = if is_session(conn.alpn()) {
                 self.0.refusal_code(&peer)
             } else {
                 dishus_proto::close_code::REFUSED

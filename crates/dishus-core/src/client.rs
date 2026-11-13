@@ -13,15 +13,15 @@ use anyhow::{Context, Result, bail};
 use bytes::Bytes;
 use iroh::{
     Endpoint, EndpointAddr, EndpointId, RelayMode, RelayUrl, SecretKey, TransportAddr,
-    endpoint::{Connection, presets},
+    endpoint::{ConnectOptions, Connection, presets},
 };
 use tokio::{sync::mpsc, task::JoinHandle, time::timeout};
 
 use dishus_proto::{
-    ALPN_PAIR, ALPN_SESSION, CAPTURE_OPEN_TIMEOUT_MS, ClientMsg, FrameError, HEARTBEAT_INTERVAL_MS,
-    MAX_CONTROL_FRAME, MAX_VIDEO_FRAME, PROTO_VERSION, PairRequest, PairResponse, PairingInfo,
-    SESSION_IDLE_TIMEOUT_MS, ServerMsg, StreamParams, VideoHeader, frame::Validate, read_frame,
-    write_frame,
+    ALPN_PAIR, ALPN_SESSION, ALPN_SESSION_V2, CAPTURE_OPEN_TIMEOUT_MS, ClientMsg, FrameError,
+    HEARTBEAT_INTERVAL_MS, MAX_CONTROL_FRAME, MAX_VIDEO_FRAME, PROTO_VERSION, PairRequest,
+    PairResponse, PairingInfo, SESSION_IDLE_TIMEOUT_MS, ServerMsg, StreamParams, VideoHeader,
+    frame::Validate, read_frame, write_frame,
 };
 
 use crate::vault::PairedPc;
@@ -208,10 +208,19 @@ impl Client {
     ) -> Result<Session> {
         let addr = pc_addr(&pc.endpoint_id, &pc.relays, &pc.addrs)?;
         let res = async {
-            let conn = timeout(CONNECT_TIMEOUT, self.endpoint.connect(addr, ALPN_SESSION))
-                .await
-                .context("timed out reaching the PC")?
-                .context("could not connect (offline, revoked or expired)")?;
+            // session/2 (audio) if the PC knows it, else session/1: the PC picks.
+            let opts = ConnectOptions::new().with_additional_alpns(vec![ALPN_SESSION.to_vec()]);
+            let conn = timeout(CONNECT_TIMEOUT, async {
+                anyhow::Ok(
+                    self.endpoint
+                        .connect_with_opts(addr, ALPN_SESSION_V2, opts)
+                        .await?
+                        .await?,
+                )
+            })
+            .await
+            .context("timed out reaching the PC")?
+            .context("could not connect (offline, revoked or expired)")?;
             // The PC may refuse right after the handshake: depending on timing that surfaces
             // here or as an error while opening the control stream.
             let closed = conn.clone();
@@ -250,6 +259,8 @@ pub struct Session {
     video_rx: tokio::sync::Mutex<mpsc::Receiver<VideoPacket>>,
     rtt_ms: Arc<AtomicU64>,
     closed: Arc<AtomicBool>,
+    /// session/2 was negotiated: the PC can send audio.
+    audio_supported: bool,
     /// Set when the watchdog gave up on a silent PC.
     timed_out: Arc<AtomicBool>,
     tasks: Vec<JoinHandle<()>>,
@@ -484,6 +495,7 @@ impl Session {
         });
 
         Ok(Self {
+            audio_supported: conn.alpn() == ALPN_SESSION_V2,
             conn,
             tx,
             control_rx: tokio::sync::Mutex::new(ctl_rx),
@@ -495,9 +507,17 @@ impl Session {
         })
     }
 
+    /// The PC speaks session/2 and can stream its audio.
+    pub fn audio_supported(&self) -> bool {
+        self.audio_supported
+    }
+
     /// Queue a message. Validated locally first so the PC never has to drop us for garbage.
     pub fn send(&self, msg: ClientMsg) -> Result<()> {
         msg.validate().map_err(|e| anyhow::anyhow!(e))?;
+        if matches!(msg, ClientMsg::SetAudio { .. }) && !self.audio_supported {
+            bail!("this PC's DiShus is too old for audio");
+        }
         self.tx
             .try_send(msg)
             .map_err(|_| anyhow::anyhow!("session closed or congested"))

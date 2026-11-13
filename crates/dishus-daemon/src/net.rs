@@ -11,7 +11,9 @@ use iroh::{
 };
 use tokio::time::timeout;
 
-use dishus_proto::{ALPN_PAIR, ALPN_SESSION, PairRequest, PairingInfo, read_frame, write_frame};
+use dishus_proto::{
+    ALPN_PAIR, ALPN_SESSION, ALPN_SESSION_V2, PairRequest, PairingInfo, read_frame, write_frame,
+};
 
 use crate::{
     gate::{Gate, incoming_filter},
@@ -176,6 +178,8 @@ pub async fn spawn_router(
     let ep = bind_endpoint(secret_key, opts, Some(Gate(state.clone()))).await?;
     Ok(Router::builder(ep)
         .incoming_filter(incoming_filter(state.clone()))
+        // Preferred first: a phone that offers both gets session/2 (audio).
+        .accept(ALPN_SESSION_V2, SessionHandler(state.clone()))
         .accept(ALPN_SESSION, SessionHandler(state.clone()))
         .accept(ALPN_PAIR, PairHandler(state))
         .spawn())

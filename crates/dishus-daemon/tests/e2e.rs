@@ -24,8 +24,8 @@ use dishus_daemon::{
     state::AppState,
 };
 use dishus_proto::{
-    ALPN_SESSION, ByeReason, ClientMsg, MonitorInfo, MouseButton, PROTO_VERSION, PairingInfo,
-    ServerMsg, StreamParams, write_frame,
+    ALPN_SESSION, ALPN_SESSION_V2, ByeReason, ClientMsg, MonitorInfo, MouseButton, PROTO_VERSION,
+    PairingInfo, ServerMsg, StreamParams, read_frame, write_frame,
 };
 use iroh::{SecretKey, protocol::Router};
 use tokio::{sync::mpsc, time::timeout};
@@ -759,4 +759,95 @@ async fn invalid_message_ends_session() {
         .await
         .expect("daemon should close the connection");
     assert!(!pc.input.log().iter().any(|l| l.starts_with("key 116")));
+}
+
+/// A phone speaking raw protocol on `alpn`: Hello sent, Welcome read.
+async fn raw_session(
+    pc: &Pc,
+    alpn: &[u8],
+) -> (
+    iroh::endpoint::Connection,
+    iroh::endpoint::SendStream,
+    iroh::endpoint::RecvStream,
+    iroh::Endpoint,
+) {
+    let raw = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .clear_ip_transports()
+        .bind_addr("127.0.0.1:0")
+        .unwrap()
+        .relay_mode(iroh::RelayMode::Disabled)
+        .bind()
+        .await
+        .unwrap();
+    {
+        let mut d = pc.state.devices.write().unwrap();
+        d.add(&raw.id(), "raw", 1, dishus_daemon::devices::now_unix())
+            .unwrap();
+    }
+    let addr = iroh::EndpointAddr::from_parts(
+        pc.router.endpoint().id(),
+        pc.router
+            .endpoint()
+            .bound_sockets()
+            .into_iter()
+            .map(iroh::TransportAddr::Ip),
+    );
+    let conn = raw.connect(addr, alpn).await.unwrap();
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    let hello = ClientMsg::Hello {
+        proto_version: PROTO_VERSION,
+        device_name: "raw".into(),
+        stream: StreamParams::default(),
+    };
+    write_frame(&mut send, &hello, 4096).await.unwrap();
+    let welcome: ServerMsg = timeout(Duration::from_secs(5), read_frame(&mut recv, 65536))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        welcome,
+        ServerMsg::Welcome {
+            proto_version: 1,
+            ..
+        }
+    ));
+    (conn, send, recv, raw)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn new_phone_gets_session2_old_phone_keeps_session1() {
+    let pc = Pc::start().await;
+    // The app's client offers both and gets session/2.
+    let c = phone().await;
+    let paired = c.pair(&pc.pairing_link(), "phone").await.unwrap();
+    let s = connect(&c, &paired).await.unwrap();
+    assert!(s.audio_supported());
+    s.send(ClientMsg::SetAudio { on: false }).unwrap();
+    s.close().await;
+
+    // A released app (session/1 only) still gets a working session, input included...
+    let (conn, mut send, _recv, _ep) = raw_session(&pc, ALPN_SESSION).await;
+    assert_eq!(conn.alpn(), ALPN_SESSION);
+    write_frame(
+        &mut send,
+        &ClientMsg::Key {
+            code: 30,
+            down: true,
+        },
+        4096,
+    )
+    .await
+    .unwrap();
+    wait_for(|| pc.input.log().iter().any(|l| l == "key 30 down")).await;
+    // ...and a session/2 message on session/1 is a protocol error.
+    write_frame(&mut send, &ClientMsg::SetAudio { on: true }, 4096)
+        .await
+        .unwrap();
+    timeout(Duration::from_secs(5), conn.closed())
+        .await
+        .expect("SetAudio on session/1 must end the session");
+
+    // session/2 asked for directly works too.
+    let (conn, _send, _recv, _ep) = raw_session(&pc, ALPN_SESSION_V2).await;
+    assert_eq!(conn.alpn(), ALPN_SESSION_V2);
 }

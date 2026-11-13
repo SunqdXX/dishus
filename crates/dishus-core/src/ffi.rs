@@ -155,6 +155,11 @@ pub enum ControlEvent {
     Closed {
         reason: String,
     },
+    /// Audio datagrams follow (Opus).
+    AudioStarted {
+        sample_rate: u32,
+        channels: u8,
+    },
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -473,6 +478,14 @@ impl RemoteSession {
     pub fn renew(&self, days: u16) -> Result<(), DishusError> {
         self.send(ClientMsg::RenewPairing { days })
     }
+    /// The PC's DiShus can stream audio (it speaks session/2).
+    pub fn audio_supported(&self) -> bool {
+        self.session.audio_supported()
+    }
+    /// Start or stop PC audio. Errors on a PC too old for audio.
+    pub fn set_audio(&self, on: bool) -> Result<(), DishusError> {
+        self.send(ClientMsg::SetAudio { on })
+    }
 
     pub async fn next_control(&self) -> Option<ControlEvent> {
         let s = self.session.clone();
@@ -528,6 +541,13 @@ impl RemoteSession {
             Some(ServerMsg::Notice { message, .. }) => ControlEvent::Notice { message },
             Some(ServerMsg::Bye { reason }) => ControlEvent::Closed {
                 reason: format!("{reason:?}"),
+            },
+            Some(ServerMsg::AudioStarted {
+                sample_rate,
+                channels,
+            }) => ControlEvent::AudioStarted {
+                sample_rate,
+                channels,
             },
             Some(ServerMsg::Pong { .. }) => return None, // never forwarded by Session
         })

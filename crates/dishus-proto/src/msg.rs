@@ -105,6 +105,11 @@ pub enum ClientMsg {
         days: u16,
     },
     Bye,
+    /// session/2 only. Start (`true`) or stop PC audio. Off until the phone asks; while off the
+    /// PC captures nothing.
+    SetAudio {
+        on: bool,
+    },
 }
 
 impl Validate for ClientMsg {
@@ -158,7 +163,8 @@ impl Validate for ClientMsg {
             | ClientMsg::MouseButton { .. }
             | ClientMsg::ReleaseAll
             | ClientMsg::RequestKeyframe
-            | ClientMsg::Bye => Ok(()),
+            | ClientMsg::Bye
+            | ClientMsg::SetAudio { .. } => Ok(()),
         }
     }
 }
@@ -178,6 +184,8 @@ pub enum NoticeKind {
     CaptureUnavailable,
     /// The request was understood but refused.
     Refused,
+    /// session/2 only: PC audio failed or is not available. Video and input are unaffected.
+    AudioUnavailable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -225,6 +233,11 @@ pub enum ServerMsg {
     Bye {
         reason: ByeReason,
     },
+    /// session/2 only. Audio datagrams follow: Opus, 20 ms packets.
+    AudioStarted {
+        sample_rate: u32,
+        channels: u8,
+    },
 }
 
 impl Validate for ServerMsg {
@@ -268,6 +281,16 @@ impl Validate for ServerMsg {
             ServerMsg::Notice { message, .. } => {
                 if message.len() > MAX_ERROR_LEN {
                     Err("notice too long")
+                } else {
+                    Ok(())
+                }
+            }
+            ServerMsg::AudioStarted {
+                sample_rate,
+                channels,
+            } => {
+                if *sample_rate != crate::audio::AUDIO_SAMPLE_RATE || !(1..=2).contains(channels) {
+                    Err("unsupported audio format")
                 } else {
                     Ok(())
                 }
@@ -409,6 +432,32 @@ mod tests {
             .validate()
             .is_err()
         );
+    }
+
+    /// Released builds decode by variant position: new variants must only be appended.
+    #[test]
+    fn session1_encodings_unchanged() {
+        let enc = |m: &ClientMsg| postcard::to_allocvec(m).unwrap();
+        assert_eq!(enc(&ClientMsg::Bye), [10]);
+        assert_eq!(enc(&ClientMsg::RequestKeyframe), [7]);
+        assert_eq!(enc(&ClientMsg::SetAudio { on: true }), [11, 1]);
+        let bye = postcard::to_allocvec(&ServerMsg::Bye {
+            reason: ByeReason::Timeout,
+        })
+        .unwrap();
+        assert_eq!(bye, [5, 4]);
+        let notice = postcard::to_allocvec(&NoticeKind::Refused).unwrap();
+        assert_eq!(notice, [2]);
+        let started = ServerMsg::AudioStarted {
+            sample_rate: 48_000,
+            channels: 2,
+        };
+        assert!(started.validate().is_ok());
+        let bad = ServerMsg::AudioStarted {
+            sample_rate: 44_100,
+            channels: 2,
+        };
+        assert!(bad.validate().is_err());
     }
 
     #[test]

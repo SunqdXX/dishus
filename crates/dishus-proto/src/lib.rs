@@ -7,8 +7,16 @@
 //!   prefix + `postcard`-encoded [`ClientMsg`] / [`ServerMsg`]. Max [`MAX_CONTROL_FRAME`] bytes.
 //! * Video (one unidirectional QUIC stream per encoded frame, opened by the PC):
 //!   [`VideoHeader`] followed by an H.264 Annex-B access unit. Max [`MAX_VIDEO_FRAME`] bytes.
+//! * Audio (session/2 only): one QUIC datagram per Opus packet, [`AudioHeader`] first.
 //! * Pairing (separate ALPN): a single [`PairRequest`] / [`PairResponse`] exchange.
+//!
+//! **Versions are ALPNs.** `proto_version` in `Hello`/`Welcome` stays 1: released builds reject
+//! anything else, so bumping it would cut them off. A new phone offers session/2 and session/1,
+//! a new PC prefers session/2, and old builds only know session/1. Messages added for session/2
+//! are appended to the enums (postcard numbers variants by position) and are never sent on a
+//! session/1 connection: an old peer would treat an unknown variant as a protocol error.
 
+pub mod audio;
 pub mod frame;
 pub mod ipc;
 pub mod keys;
@@ -16,6 +24,7 @@ pub mod msg;
 pub mod pairing;
 pub mod video;
 
+pub use audio::AudioHeader;
 pub use frame::{FrameError, read_frame, write_frame};
 pub use msg::*;
 pub use pairing::{PairingInfo, PairingUriError};
@@ -23,6 +32,8 @@ pub use video::VideoHeader;
 
 /// ALPN of an authenticated remote-control session.
 pub const ALPN_SESSION: &[u8] = b"dishus/session/1";
+/// session/1 plus PC audio ([`ClientMsg::SetAudio`], [`ServerMsg::AudioStarted`], datagrams).
+pub const ALPN_SESSION_V2: &[u8] = b"dishus/session/2";
 /// ALPN of the pairing handshake. Only accepted while the pairing window is open.
 pub const ALPN_PAIR: &[u8] = b"dishus/pair/1";
 
