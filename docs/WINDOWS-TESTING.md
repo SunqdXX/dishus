@@ -6,10 +6,11 @@ scripts: copy a build in, run it on the Windows desktop, read its logs, take scr
 throw all changes away again.
 
 **Video doesn't work in the VM yet.** See [Known limits](#known-limits). Tested so far with
-0.1.4: the installer, the firewall prompt, pairing and keyboard input (with the
+0.1.4: the installer, the firewall prompt, pairing, keyboard and mouse input (with the
 `desktop_client` example as the phone), Caps Lock being switched back off when a session ends,
-auto-start at login, `dishus status`, `dishus doctor` and the logs. Mouse input and a real
-phone haven't been tried yet.
+auto-start at login, `dishus status`, `dishus doctor`, the logs, and all of it again as a
+standard (non-admin) user, with the same PC id after a restart. A real phone hasn't been tried
+yet.
 
 ## How it works
 
@@ -94,6 +95,12 @@ scripts/vm-logs.sh                  # DiShus's logs and the run logs, into ~/VMs
 scripts/vm-ssh.sh 'Get-Process dishus*'   # any PowerShell command
 ```
 
+To test as a standard user, create one over SSH, make it the auto-login user (registry
+`Winlogon`: `AutoAdminLogon`, `DefaultUserName`, `DefaultPassword`), restart, and set
+`DISHUS_VM_USER=<name>` for `vm-run.sh`. Its DiShus log is private to that user, so read it
+through `vm-run.sh` (for example with `findstr`), not over SSH. `vm-reset.sh` removes the user
+again.
+
 DiShus commands like `dishus status` have to go through `vm-run.sh` too:
 
 ```sh
@@ -126,9 +133,11 @@ export DISHUS_CLIENT_DIR=/tmp/dishus-vm-client    # keeps this pairing apart fro
 link=$(scripts/vm-ssh.sh "(Select-String -Path C:\dishus\run-*.log -Pattern 'dishus://pair' | Select -Last 1).Line.Trim()" | tr -d '\r')
 cargo run -p dishus-core --example desktop_client -- pair "$link"
 cargo run -p dishus-core --example desktop_client -- keys 35      # types h
+cargo run -p dishus-core --example desktop_client -- mouse move:-15:120,right
 ```
 
-Each `keys` call is one session. Linux key codes: 35 is H, 30 is A, 58 is Caps Lock.
+Each `keys` or `mouse` call is one session. Linux key codes: 35 is H, 30 is A, 58 is Caps Lock.
+Mouse moves are relative and Windows speeds them up (a move of 15 went about 37 pixels).
 A window to type into: `scripts/vm-run.sh 'C:\Windows\System32\cmd.exe' /k` shows what's typed.
 Notepad doesn't work for this: on a fresh VM it starts but never shows a window.
 
@@ -137,12 +146,14 @@ Notepad doesn't work for this: on a fresh VM it starts but never shows a window.
 - **No video.** DiShus can't create its graphics device in the VM: `dishus doctor` says
   "creating D3D11 device: ... not supported (0x887A0004)", with both the virtio and the plain
   VGA display. The VM has no real GPU, only Windows' software renderer ("Microsoft Basic Render
-  Driver"). What was measured: a D3D11 device on the default adapter can be created there, with
-  and without video support; DiShus's own call, on the adapter it picks, fails. The cause isn't
-  found yet, and it's not known whether capture and the CPU encoder work once it is.
+  Driver"), and that has no video processor. DiShus asks for one
+  (`D3D11_CREATE_DEVICE_VIDEO_SUPPORT`) because it converts the picture to NV12 on the GPU.
+  Without that flag the device is created and Desktop Duplication delivers frames, so a fix
+  needs a CPU fallback for the conversion. A real PC without a GPU driver would hit the same.
 - **No GPU encoders.** NVENC, Quick Sync and AMF can't be tested here; the VM has no GPU.
-- **The lock screen and UAC prompts** can't be tested: auto-login skips the first, and the VM's
-  user is an administrator. DiShus runs with a normal, non-elevated token, though.
+- **The lock screen** can't be tested: auto-login skips it.
+- **A standard user** gets the firewall prompt too, and Allow then asks for an admin password.
+  Cancelling it is fine: pairing and input still worked.
 - **The SFTP server** in this OpenSSH build quits right after starting, so the scripts use
   legacy scp (`scp -O`).
 - **"Press any key to boot from CD":** `vm-create.sh` presses F12 for 12 seconds to get past it.

@@ -5,6 +5,7 @@
 //! cargo run -p dishus-core --example desktop_client -- view --seconds 20 > out.h264
 //! cargo run -p dishus-core --example desktop_client -- view | ffplay -fflags nobuffer -flags low_delay -framedrop -f h264 -
 //! cargo run -p dishus-core --example desktop_client -- keys 125,2   # tap Super+1
+//! cargo run -p dishus-core --example desktop_client -- mouse move:200:0,right   # move, right-click
 //! ```
 //!
 //! State (identity + paired PC) is kept in `$DISHUS_CLIENT_DIR` (default
@@ -34,7 +35,7 @@ impl OpenOptionsExt for std::fs::OpenOptions {
 
 use dishus_core::{
     Client, NetConfig,
-    proto::{ClientMsg, PairingInfo, Quality, ServerMsg, StreamParams},
+    proto::{ClientMsg, MouseButton, PairingInfo, Quality, ServerMsg, StreamParams},
     vault::{self, KdfParams},
 };
 
@@ -111,7 +112,7 @@ async fn main() -> Result<()> {
             v.pcs.push(pc);
             save(&v)?;
         }
-        "view" | "keys" | "renew" => {
+        "view" | "keys" | "mouse" | "renew" => {
             let pc = v
                 .pcs
                 .last()
@@ -155,6 +156,43 @@ async fn main() -> Result<()> {
                         code: *c,
                         down: false,
                     })?;
+                }
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                s.close().await;
+                return Ok(());
+            }
+            if cmd == "mouse" {
+                // comma separated: move:DX:DY, scroll:DY, left, right, middle (a click)
+                let script = args.get(1).context("usage: mouse move:200:0,right")?;
+                for step in script.split(',') {
+                    let p: Vec<&str> = step.split(':').collect();
+                    let button = match p[0] {
+                        "left" => Some(MouseButton::Left),
+                        "right" => Some(MouseButton::Right),
+                        "middle" => Some(MouseButton::Middle),
+                        _ => None,
+                    };
+                    if let Some(button) = button {
+                        s.send(ClientMsg::MouseButton { button, down: true })?;
+                        tokio::time::sleep(Duration::from_millis(60)).await;
+                        s.send(ClientMsg::MouseButton {
+                            button,
+                            down: false,
+                        })?;
+                    } else {
+                        let n = |i: usize| -> Result<i16> {
+                            Ok(p.get(i).context("missing number")?.parse()?)
+                        };
+                        match p[0] {
+                            "move" => s.send(ClientMsg::MouseMove {
+                                dx: n(1)?,
+                                dy: n(2)?,
+                            })?,
+                            "scroll" => s.send(ClientMsg::Scroll { dx: 0, dy: n(1)? })?,
+                            other => bail!("unknown mouse step {other}"),
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
                 }
                 tokio::time::sleep(Duration::from_millis(300)).await;
                 s.close().await;
@@ -211,7 +249,7 @@ async fn main() -> Result<()> {
             s.close().await;
         }
         _ => bail!(
-            "usage: desktop_client pair <uri> | view [--seconds N] [--fps N] [--max-height N] [--monitor N] | keys 125,2 | renew [--days N]"
+            "usage: desktop_client pair <uri> | view [--seconds N] [--fps N] [--max-height N] [--monitor N] | keys 125,2 | mouse move:200:0,right | renew [--days N]"
         ),
     }
     client.close().await;
