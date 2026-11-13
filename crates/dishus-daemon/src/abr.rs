@@ -8,6 +8,12 @@
 use dishus_proto::Quality;
 
 pub const TICK_MS: u64 = 500;
+/// Clean ticks before adaptive fps goes back from 30 to 60: starts at 5 s and doubles every
+/// time 60 fps fails, up to 30 s, so a weak link holds 30 instead of flipping every few seconds.
+const UP_AFTER_MIN: u32 = 10;
+const UP_AFTER_MAX: u32 = 60;
+/// Clean ticks at 60 fps (30 s) after which a hiccup counts as isolated: back to the short wait.
+const STABLE_AT_60: u32 = 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Bounds {
@@ -54,6 +60,8 @@ pub struct Abr {
     adaptive_fps: bool,
     pub fps: u8,
     good_ticks: u32,
+    /// Clean ticks needed before 30 -> 60 (see [`UP_AFTER_MIN`]).
+    up_after: u32,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -72,6 +80,7 @@ impl Abr {
             adaptive_fps,
             fps: if adaptive_fps { 30 } else { fps },
             good_ticks: 0,
+            up_after: UP_AFTER_MIN,
         }
     }
 
@@ -81,11 +90,17 @@ impl Abr {
         let near_limit = s.inflight_limit.max(4) - 1;
         let congested = s.dropped > 0 || s.stalled > 0 || s.peak_inflight >= near_limit;
         if congested {
+            if self.adaptive_fps && self.fps == 60 {
+                self.fps = 30;
+                // A long clean stretch at 60 first: an isolated hiccup, keep the short wait.
+                self.up_after = if self.good_ticks >= self.up_after + STABLE_AT_60 {
+                    UP_AFTER_MIN
+                } else {
+                    (self.up_after * 2).min(UP_AFTER_MAX)
+                };
+            }
             self.good_ticks = 0;
             self.bitrate = ((self.bitrate as u64 * 7 / 10) as u32).max(self.b.min);
-            if self.adaptive_fps {
-                self.fps = 30;
-            }
         } else {
             self.good_ticks = self.good_ticks.saturating_add(1);
             if self.good_ticks.is_multiple_of(4) {
@@ -93,7 +108,7 @@ impl Abr {
             }
             if self.adaptive_fps
                 && self.fps < 60
-                && self.good_ticks >= 10
+                && self.good_ticks >= self.up_after
                 && self.bitrate as u64 * 2 >= self.b.max.min(20_000) as u64
             {
                 self.fps = 60;
@@ -136,6 +151,46 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(c.fps, Some(30), "drops to 30 on trouble");
+    }
+
+    /// Mobile data: ~6 s clean, then a congested tick, over and over. 60 fps must not come
+    /// back every cycle (it flipped 30 <-> 60 every few seconds on a real phone).
+    #[test]
+    fn adaptive_fps_does_not_flap() {
+        let mut a = Abr::new(bounds(Quality::Medium, 20_000), 0);
+        let mut changes = 0;
+        for _ in 0..10 {
+            for _ in 0..12 {
+                changes += usize::from(a.tick(TickStats::default()).fps.is_some());
+            }
+            changes += usize::from(
+                a.tick(TickStats {
+                    dropped: 1,
+                    ..Default::default()
+                })
+                .fps
+                .is_some(),
+            );
+        }
+        assert!(changes <= 2, "{changes} fps changes in 10 cycles");
+        assert_eq!(a.fps, 30);
+        // A link that stays clean long enough still gets 60 back...
+        for _ in 0..UP_AFTER_MAX {
+            a.tick(TickStats::default());
+        }
+        assert_eq!(a.fps, 60);
+        // ...and after a long clean stretch at 60, one hiccup only costs the short wait again.
+        for _ in 0..STABLE_AT_60 {
+            a.tick(TickStats::default());
+        }
+        a.tick(TickStats {
+            dropped: 1,
+            ..Default::default()
+        });
+        for _ in 0..UP_AFTER_MIN {
+            a.tick(TickStats::default());
+        }
+        assert_eq!(a.fps, 60);
     }
 
     #[test]
