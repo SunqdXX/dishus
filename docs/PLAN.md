@@ -9,6 +9,41 @@
 | c | Trust | Pairing window + one-time token, allowlist gate in `after_handshake`, expiry/renew, local IPC, `dishus` CLI, lockdown (`kill`) |
 | d | Android | Kotlin + Compose app, Rust core via UniFFI, MediaCodec decode, 60/40 screen/keyboard UI, encrypted key store |
 | e | Ship | systemd hardening, AUR PKGBUILD, CI (`cargo-audit`, `cargo-deny`), README, manual test checklist |
+| f | Windows | Desktop Duplication + Media Foundation H.264, SendInput, per-user install (by yasinlol). Released in 0.1.3 |
+| g | Windows test VM | Unattended Windows 11 VM under user-mode libvirt, `scripts/vm-*.sh`, `docs/WINDOWS-TESTING.md` |
+
+## Status (2026-11-13)
+
+Released: 0.1.0 to 0.1.4 (Linux, Android; Windows since 0.1.3). 0.1.4 turns Caps/Num/Scroll
+Lock back off when a phone session ends.
+
+Tested on Windows in the VM with 0.1.4: install, firewall prompt, pairing, keyboard, mouse,
+Caps Lock undo, auto-start, `status`, `doctor`, and a standard (non-admin) user keeping the same
+PC id after a restart. The phone's part was played by the `desktop_client` example. Not tested:
+a real phone against Windows, video.
+
+Known broken: video on Windows PCs whose graphics adapter has no video processor (the VM;
+probably also PCs without a GPU driver). Windows' software renderer can't create a device with
+`D3D11_CREATE_DEVICE_VIDEO_SUPPORT`, and the pipeline needs the video processor for BGRA to
+NV12. Measured in the VM: without that flag, Desktop Duplication delivers frames.
+
+## Next (none started; each needs the owner's go)
+
+1. Windows video without a video processor: a CPU BGRA to NV12 fallback for the software
+   encoder. About 150 lines in `capture/win/`, the converter testable on Linux.
+2. `dishus doctor` on Windows blames hybrid graphics for that failure, and the daemon logs
+   "encoders: software" right after its capture check failed. Both messages are wrong.
+3. A real phone against the Windows VM (needs the owner and a phone, about 5 minutes).
+4. Turning the PC on from the phone (Wake-on-LAN). The owner's request was "the PC opener";
+   that reading is not confirmed yet. Needs Wake-on-LAN enabled in the BIOS by the owner, and
+   only works from the same network unless the router or another device can send the packet.
+5. Controlling the login screen, to type the password from the phone. Windows: a system service
+   that captures the Winlogon desktop (would also cover UAC prompts). Linux: a root helper for
+   the greeter, which the portal can't capture. Big and security-sensitive. The boot menu
+   itself can't be done in software.
+6. iOS: still blocked by Apple's $99/year. Free sideloading expires every 7 days and needs a
+   Mac or AltStore.
+7. Parked: the setup-capture token-reuse bug, the zero-install plan.
 
 ## Decisions (made without asking; revisit freely)
 

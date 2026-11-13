@@ -16,7 +16,10 @@ yet.
 
 - **The VM** runs under your own user's libvirt (`qemu:///session`). There's no root daemon, no
   network bridge and no firewall change on the host. libvirt keeps its own settings in
-  `~/.config/libvirt`.
+  `~/.config/libvirt` and a cache in `~/.cache/libvirt`. The VM's TPM emulator (swtpm) adds
+  `~/.config/swtpm_setup.conf`, `~/.config/swtpm-localca.conf`, `~/.config/swtpm-localca.options`
+  and `~/.config/var/lib/swtpm-localca/` the first time a VM with a TPM is created. Leave them:
+  the TPM uses them.
 - **Files** live in one folder, `~/VMs/windows` by default (set `DISHUS_VM_DIR` to change it). It
   needs about 80 GB, so put it on a big disk:
 
