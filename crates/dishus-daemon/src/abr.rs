@@ -5,6 +5,8 @@
 //! slowly. In adaptive-fps mode, start at 30 fps and go to 60 only after a sustained clean
 //! period at a decent bitrate; fall back to 30 at the first sign of trouble.
 
+use std::collections::VecDeque;
+
 use dishus_proto::Quality;
 
 pub const TICK_MS: u64 = 500;
@@ -14,6 +16,13 @@ const UP_AFTER_MIN: u32 = 10;
 const UP_AFTER_MAX: u32 = 60;
 /// Clean ticks at 60 fps (30 s) after which a hiccup counts as isolated: back to the short wait.
 const STABLE_AT_60: u32 = 60;
+/// RTT samples (5 s) whose minimum is the link's normal RTT. A higher RTT that lasts this long
+/// (moved to a relay, to mobile data) becomes the new normal.
+const RTT_WINDOW: usize = 10;
+/// The RTT has risen (queues are building) above twice the normal RTT plus this.
+const RTT_RISE_MS: u32 = 40;
+/// Packet loss counts as congestion from this many packets in a tick and over 2 % of those sent.
+const LOSS_MIN_PACKETS: u64 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Bounds {
@@ -50,6 +59,10 @@ pub struct TickStats {
     pub key_requests: u32,
     /// The sender's current in-flight limit (0 = unknown: use the LAN default of 4).
     pub inflight_limit: usize,
+    /// Selected path's RTT (0 = unknown), QUIC packets sent and lost (MTU probes excluded).
+    pub rtt_ms: u32,
+    pub sent_packets: u64,
+    pub lost_packets: u64,
 }
 
 #[derive(Debug)]
@@ -62,6 +75,7 @@ pub struct Abr {
     good_ticks: u32,
     /// Clean ticks needed before 30 -> 60 (see [`UP_AFTER_MIN`]).
     up_after: u32,
+    rtts: VecDeque<u32>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -81,6 +95,7 @@ impl Abr {
             fps: if adaptive_fps { 30 } else { fps },
             good_ticks: 0,
             up_after: UP_AFTER_MIN,
+            rtts: VecDeque::with_capacity(RTT_WINDOW),
         }
     }
 
@@ -88,7 +103,10 @@ impl Abr {
         let (old_br, old_fps) = (self.bitrate, self.fps);
         // Queueing builds up before frames get dropped: near the in-flight limit is congestion.
         let near_limit = s.inflight_limit.max(4) - 1;
-        let congested = s.dropped > 0 || s.stalled > 0 || s.peak_inflight >= near_limit;
+        let congested = s.dropped > 0
+            || s.stalled > 0
+            || s.peak_inflight >= near_limit
+            || self.link_congested(&s);
         if congested {
             if self.adaptive_fps && self.fps == 60 {
                 self.fps = 30;
@@ -118,6 +136,20 @@ impl Abr {
             bitrate: (self.bitrate != old_br).then_some(self.bitrate),
             fps: (self.fps != old_fps).then_some(self.fps),
         }
+    }
+
+    /// QUIC sees trouble before frames back up: lost packets, or an RTT well above normal.
+    fn link_congested(&mut self, s: &TickStats) -> bool {
+        let lossy = s.lost_packets >= LOSS_MIN_PACKETS && s.lost_packets * 50 > s.sent_packets;
+        let normal = self.rtts.iter().min().copied();
+        let risen = s.rtt_ms > 0 && normal.is_some_and(|n| s.rtt_ms > n * 2 + RTT_RISE_MS);
+        if s.rtt_ms > 0 {
+            if self.rtts.len() == RTT_WINDOW {
+                self.rtts.pop_front();
+            }
+            self.rtts.push_back(s.rtt_ms);
+        }
+        lossy || risen
     }
 }
 
@@ -191,6 +223,58 @@ mod tests {
             a.tick(TickStats::default());
         }
         assert_eq!(a.fps, 60);
+    }
+
+    fn net(rtt_ms: u32, sent_packets: u64, lost_packets: u64) -> TickStats {
+        TickStats {
+            rtt_ms,
+            sent_packets,
+            lost_packets,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn backs_off_on_packet_loss() {
+        let mut a = Abr::new(bounds(Quality::Medium, 20_000), 0);
+        assert_eq!(
+            a.tick(net(40, 1000, 2)).bitrate,
+            None,
+            "2 lost packets: noise"
+        );
+        assert_eq!(
+            a.tick(net(40, 1000, 15)).bitrate,
+            None,
+            "1.5 %: below threshold"
+        );
+        assert_eq!(
+            a.tick(net(40, 1000, 30)).bitrate,
+            Some(2_800),
+            "3 % lost: back off"
+        );
+    }
+
+    #[test]
+    fn backs_off_on_rtt_rise_and_adapts_to_a_new_normal() {
+        let mut a = Abr::new(bounds(Quality::Medium, 20_000), 0);
+        for _ in 0..RTT_WINDOW {
+            a.tick(net(40, 100, 0));
+        }
+        let br = a.bitrate;
+        a.tick(net(100, 100, 0));
+        assert!(a.bitrate >= br, "100 ms is under 2 x 40 + 40: no back-off");
+        let br = a.bitrate;
+        a.tick(net(150, 100, 0));
+        assert!(a.bitrate < br, "150 ms: back off");
+        // Moved to a slower path for good: after one window 150 ms is the normal RTT.
+        for _ in 0..RTT_WINDOW {
+            a.tick(net(150, 100, 0));
+        }
+        let br = a.bitrate;
+        for _ in 0..4 {
+            a.tick(net(150, 100, 0));
+        }
+        assert!(a.bitrate >= br, "no more back-offs at a steady 150 ms");
     }
 
     #[test]

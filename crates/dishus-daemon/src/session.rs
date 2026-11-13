@@ -134,6 +134,15 @@ fn selected_rtt(conn: &Connection) -> Duration {
         .unwrap_or(Duration::from_millis(100))
 }
 
+/// Selected path: (RTT, QUIC packets sent, packets lost not counting MTU probes), as totals.
+fn path_counters(conn: &Connection) -> Option<(Duration, u64, u64)> {
+    conn.paths().iter().find(|p| p.is_selected()).map(|p| {
+        let s = p.stats();
+        let lost = s.lost_packets.saturating_sub(s.lost_plpmtud_probes);
+        (p.rtt(), s.sent_packets, lost)
+    })
+}
+
 fn path_summary(conn: &Connection) -> String {
     let paths = conn.paths();
     match paths.iter().find(|p| p.is_selected()) {
@@ -594,6 +603,8 @@ async fn video_task(
         // target next to what the encoder really produced tells rate control from content.
         let mut second = TickStats::default();
         let mut second_ticks = 0u32;
+        // Packet totals at the last tick (per path: a path change restarts them, hence saturating).
+        let mut counted = (0u64, 0u64);
         stream.control.force_keyframe();
         loop {
             tokio::select! {
@@ -629,7 +640,13 @@ async fn video_task(
                 },
                 _ = tick.tick() => {
                     sender.max_inflight = inflight_limit(selected_rtt(&conn), abr.fps);
-                    let st = sender.take_stats();
+                    let mut st = sender.take_stats();
+                    if let Some((rtt, sent, lost)) = path_counters(&conn) {
+                        st.rtt_ms = u32::try_from(rtt.as_millis()).unwrap_or(u32::MAX);
+                        st.sent_packets = sent.saturating_sub(counted.0);
+                        st.lost_packets = lost.saturating_sub(counted.1);
+                        counted = (sent, lost);
+                    }
                     window.sent += st.sent;
                     window.keys_sent += st.keys_sent;
                     window.dropped += st.dropped;
@@ -643,12 +660,15 @@ async fn video_task(
                     second.dropped += st.dropped;
                     second.stalled += st.stalled;
                     second.peak_inflight = second.peak_inflight.max(st.peak_inflight);
+                    second.sent_packets += st.sent_packets;
+                    second.lost_packets += st.lost_packets;
                     second_ticks += 1;
                     if second_ticks * abr::TICK_MS as u32 >= 1000 {
                         let s = std::mem::take(&mut second);
                         tracing::debug!(
                             "video 1s: target {} kbps {} fps, sent {} kbps {} frames ({} key), \
-                             {} dropped, {} stalled, in flight {}/{}, rtt {} ms",
+                             {} dropped, {} stalled, in flight {}/{}, rtt {} ms, \
+                             lost {}/{} packets",
                             abr.bitrate,
                             abr.fps,
                             s.bytes * 8 / (u64::from(second_ticks) * abr::TICK_MS), // bits per ms = kbit/s
@@ -658,7 +678,9 @@ async fn video_task(
                             s.stalled,
                             s.peak_inflight,
                             sender.max_inflight,
-                            selected_rtt(&conn).as_millis()
+                            selected_rtt(&conn).as_millis(),
+                            s.lost_packets,
+                            s.sent_packets
                         );
                         second_ticks = 0;
                     }
