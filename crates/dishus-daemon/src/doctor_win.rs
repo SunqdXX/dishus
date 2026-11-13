@@ -34,7 +34,7 @@ pub fn is_n_edition(edition: &str) -> bool {
 
 pub fn run() -> i32 {
     let _com = pipeline::Com::init();
-    println!("DiShus doctor {}", env!("CARGO_PKG_VERSION"));
+    println!("DiShus doctor {}", dishus_proto::VERSION);
     let (version, edition) = windows_version();
     println!("  system:    {version} · edition: {edition}");
     // Before this process touches DXGI: on hybrid graphics, pick the GPU that can capture.

@@ -7,6 +7,7 @@ $ErrorActionPreference = 'Stop'
 $root = Resolve-Path (Join-Path $PSScriptRoot '..\..')
 Set-Location $root
 $ver = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+$ver = $ver -replace '\.0$', ''  # release names are 0.31, 0.69, 1.31... (crate version 0.31.0)
 
 cargo build --release --locked -p dishus-daemon
 if ($LASTEXITCODE -ne 0) { throw 'building dishus-daemon failed' }

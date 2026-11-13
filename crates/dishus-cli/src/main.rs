@@ -28,7 +28,7 @@ use dishus_proto::{
 #[derive(Parser)]
 #[command(
     name = "dishus",
-    version,
+    version = dishus_proto::VERSION,
     about = "Control the DiShus remote-control daemon"
 )]
 struct Cli {

@@ -161,7 +161,7 @@ async fn main() -> Result<()> {
     if let Some(a) = args.next() {
         match a.as_str() {
             "--version" | "-V" => {
-                println!("dishus-daemon {}", env!("CARGO_PKG_VERSION"));
+                println!("dishus-daemon {}", dishus_proto::VERSION);
                 return Ok(());
             }
             "--doctor" => {
@@ -207,7 +207,7 @@ async fn main() -> Result<()> {
             .with_ansi(false)
             .with_writer(std::sync::Mutex::new(log))
             .init();
-        tracing::info!("dishus-daemon {} starting", env!("CARGO_PKG_VERSION"));
+        tracing::info!("dishus-daemon {} starting", dishus_proto::VERSION);
     }
     // Before touching any state: a previous instance may still be shutting down (restart),
     // and two daemons must never share the control socket or write devices.toml together.

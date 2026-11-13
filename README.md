@@ -119,6 +119,11 @@ phone are US layout.
 The gear icon opens quick settings: frame rate, picture quality, resolution, which monitor to show,
 renewing the pairing, and whether you're connected directly or through a relay.
 
+The speaker button next to the gear plays the PC's sound on the phone. It's off until you turn it
+on, and the app remembers your choice. The volume slider is in quick settings. While sound is off
+the PC records nothing. On a weak connection the sound gets lower quality first, and drops out
+before the picture or the keyboard does. Sound works with a Linux PC for now; Windows comes later.
+
 Lost your phone, or something looks wrong? Run `dishus kill` on the PC. It cuts every connection
 at once and refuses new ones until you run `dishus unlock`. To remove one phone for good:
 `dishus revoke <phone>`.
@@ -375,6 +380,8 @@ gives you a stand-in for the phone on your PC, handy for debugging.
 ## Known limits
 
 - One phone connected at a time. A new connection replaces the old one.
+- Sound needs DiShus 0.31 or newer on both the PC and the phone, and a Linux PC. It's about
+  0.1 seconds behind the picture.
 - The delay shown in the app is the network round trip, not the full delay from the PC screen to
   your phone.
 - The keyboard labels are US layout; the keys follow your PC's layout.

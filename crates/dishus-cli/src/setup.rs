@@ -147,7 +147,7 @@ async fn wait_ready() -> Result<()> {
 }
 
 async fn setup() -> Result<()> {
-    println!("DiShus {} for Windows\n", env!("CARGO_PKG_VERSION"));
+    println!("DiShus {} for Windows\n", dishus_proto::VERSION);
     install()?;
     wait_ready().await?;
     println!(

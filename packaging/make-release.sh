@@ -9,6 +9,7 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 ver=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+ver=${ver%.0} # release names are 0.31, 0.69, 1.31... (crate version 0.31.0)
 : "${DISHUS_KEYSTORE_PROPERTIES:?set DISHUS_KEYSTORE_PROPERTIES to the release keystore properties file}"
 [ -z "$(git status --porcelain)" ] || { echo "working tree not clean; commit first"; exit 1; }
 dist="$root/dist"; rm -rf "$dist"; mkdir -p "$dist"

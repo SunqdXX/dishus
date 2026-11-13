@@ -37,6 +37,31 @@ pub const ALPN_SESSION_V2: &[u8] = b"dishus/session/2";
 /// ALPN of the pairing handshake. Only accepted while the pairing window is open.
 pub const ALPN_PAIR: &[u8] = b"dishus/pair/1";
 
+/// The release name people see: `0.31` for crate version 0.31.0 (releases are X.31 and X.69).
+pub const VERSION: &str = short_version(env!("CARGO_PKG_VERSION"));
+
+const fn short_version(v: &'static str) -> &'static str {
+    let b = v.as_bytes();
+    if b.len() > 2 && b[b.len() - 2] == b'.' && b[b.len() - 1] == b'0' {
+        let (head, _) = b.split_at(b.len() - 2);
+        match core::str::from_utf8(head) {
+            Ok(s) => s,
+            Err(_) => v,
+        }
+    } else {
+        v
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn version_names() {
+    assert_eq!(short_version("0.31.0"), "0.31");
+    assert_eq!(short_version("1.69.0"), "1.69");
+    assert_eq!(short_version("0.1.4"), "0.1.4");
+    assert!(!VERSION.ends_with(".0"));
+}
+
 /// Protocol version carried in `Hello` / `Welcome`.
 pub const PROTO_VERSION: u16 = 1;
 

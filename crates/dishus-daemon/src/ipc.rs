@@ -120,7 +120,7 @@ async fn handle(ctx: &IpcContext, req: IpcRequest) -> IpcResponse {
                 })
                 .collect();
             IpcResponse::Status(IpcStatus {
-                version: env!("CARGO_PKG_VERSION").into(),
+                version: dishus_proto::VERSION.into(),
                 pc_name: st.config.pc_name.clone(),
                 endpoint_id: ctx.endpoint.id().to_string(),
                 relays: addr.relay_urls().map(|u| u.to_string()).collect(),

@@ -16,6 +16,8 @@
 
 Released: 0.1.0 to 0.1.4 (Linux, Android; Windows since 0.1.3). 0.1.4 turns Caps/Num/Scroll
 Lock back off when a phone session ends.
+0.31 (2026-11-14): PC sound on the phone (Linux PCs), steadier stream on weak links, phone
+screen height as the default resolution. Versions from now on: 0.31, 0.69, 1.31, 1.69, ...
 
 Tested on Windows in the VM with 0.1.4: install, firewall prompt, pairing, keyboard, mouse,
 Caps Lock undo, auto-start, `status`, `doctor`, and a standard (non-admin) user keeping the same
@@ -27,7 +29,7 @@ probably also PCs without a GPU driver). Windows' software renderer can't create
 `D3D11_CREATE_DEVICE_VIDEO_SUPPORT`, and the pipeline needs the video processor for BGRA to
 NV12. Measured in the VM: without that flag, Desktop Duplication delivers frames.
 
-## Stream quality (2026-11-14, not released yet)
+## Stream quality (released in 0.31)
 
 Local commits after 0.1.4: per-second stats on the phone (`DishusVideo` log) and the PC (DEBUG);
 adaptive fps waits 5 s, then 10, 20, up to 30 s before going back to 60 after each failure;
@@ -51,7 +53,7 @@ Mobile data, direct path, same video and settings (Native, Adaptive, Medium), RT
 One short run on a live mobile network, so this is noisy. Still bad: about 22 dropped frames
 and 4 keyframes a minute, and fps still changes 4 times a minute.
 
-## Sound (2026-11-14, Linux PC + Android, not released yet)
+## Sound (released in 0.31; Linux PC + Android)
 
 PC audio to the phone, off until the phone turns it on (then remembered). Protocol version is
 the ALPN: `dishus/session/2` adds audio, released builds keep `session/1` and still work both

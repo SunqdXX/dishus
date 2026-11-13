@@ -163,7 +163,7 @@ fn have(factory: &str) -> bool {
 /// Runs every check and prints the report. Returns the process exit code.
 pub fn run() -> i32 {
     let mut ok_video = true;
-    println!("DiShus doctor {}", env!("CARGO_PKG_VERSION"));
+    println!("DiShus doctor {}", dishus_proto::VERSION);
     if let Err(e) = pipeline::init() {
         println!("  ✗ GStreamer does not start: {e:#}");
         return 1;

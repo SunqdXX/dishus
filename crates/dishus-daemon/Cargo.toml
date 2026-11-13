@@ -80,7 +80,7 @@ windows = { version = "0.62", features = [
 dishus-win.workspace = true
 
 [dev-dependencies]
-dishus-core = { path = "../dishus-core", version = "0.1.0" }
+dishus-core = { path = "../dishus-core", version = "0.31.0" }
 tempfile = "3"
 tokio = { workspace = true, features = ["test-util"] }
 
