@@ -53,8 +53,10 @@ and 4 keyframes a minute, and fps still changes 4 times a minute.
 
 ## Next (none started; each needs the owner's go)
 
-1. Windows video without a video processor: a CPU BGRA to NV12 fallback for the software
-   encoder. About 150 lines in `capture/win/`, the converter testable on Linux.
+1. Later (the owner postponed it on 2026-11-14): Windows video without a video processor, a
+   CPU BGRA to NV12 fallback for the software encoder. GPU path stays the default. About 150
+   lines in `capture/win/`, the converter testable on Linux. Needs a test on a real Windows PC
+   with a GPU afterwards (the owner or a friend), to show the GPU path is unchanged.
 2. `dishus doctor` on Windows blames hybrid graphics for that failure, and the daemon logs
    "encoders: software" right after its capture check failed. Both messages are wrong.
 3. A real phone against the Windows VM (needs the owner and a phone, about 5 minutes).
