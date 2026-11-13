@@ -38,6 +38,8 @@ pub struct TickStats {
     pub peak_inflight: usize,
     /// Frames handed to the network (for the stats log; not a congestion signal).
     pub sent: u32,
+    /// Bytes of those frames (stats log only).
+    pub bytes: u64,
     pub keys_sent: u32,
     pub key_requests: u32,
     /// The sender's current in-flight limit (0 = unknown: use the LAN default of 4).

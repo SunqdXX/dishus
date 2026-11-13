@@ -452,6 +452,7 @@ impl FrameSender {
         }
         self.key.satisfied();
         self.stats.sent += 1;
+        self.stats.bytes += f.data.len() as u64;
         self.stats.keys_sent += u32::from(f.keyframe);
         self.seq += 1;
         let header = VideoHeader {
@@ -570,6 +571,10 @@ async fn video_task(
         // Video health over ~5 s: INFO when frames were dropped or stalled, else DEBUG.
         let mut window = TickStats::default();
         let mut window_ticks = 0u32;
+        // Per-second stats at DEBUG (DISHUS_LOG=dishus_daemon::session=debug): the controller's
+        // target next to what the encoder really produced tells rate control from content.
+        let mut second = TickStats::default();
+        let mut second_ticks = 0u32;
         stream.control.force_keyframe();
         loop {
             tokio::select! {
@@ -613,6 +618,31 @@ async fn video_task(
                     window.peak_inflight = window.peak_inflight.max(st.peak_inflight);
                     window.key_requests += st.key_requests;
                     window_ticks += 1;
+                    second.sent += st.sent;
+                    second.bytes += st.bytes;
+                    second.keys_sent += st.keys_sent;
+                    second.dropped += st.dropped;
+                    second.stalled += st.stalled;
+                    second.peak_inflight = second.peak_inflight.max(st.peak_inflight);
+                    second_ticks += 1;
+                    if second_ticks * abr::TICK_MS as u32 >= 1000 {
+                        let s = std::mem::take(&mut second);
+                        tracing::debug!(
+                            "video 1s: target {} kbps {} fps, sent {} kbps {} frames ({} key), \
+                             {} dropped, {} stalled, in flight {}/{}, rtt {} ms",
+                            abr.bitrate,
+                            abr.fps,
+                            s.bytes * 8 / (u64::from(second_ticks) * abr::TICK_MS), // bits per ms = kbit/s
+                            s.sent,
+                            s.keys_sent,
+                            s.dropped,
+                            s.stalled,
+                            s.peak_inflight,
+                            sender.max_inflight,
+                            selected_rtt(&conn).as_millis()
+                        );
+                        second_ticks = 0;
+                    }
                     if window_ticks * abr::TICK_MS as u32 >= 5000 {
                         let w = std::mem::take(&mut window);
                         window_ticks = 0;
