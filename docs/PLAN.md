@@ -27,6 +27,30 @@ probably also PCs without a GPU driver). Windows' software renderer can't create
 `D3D11_CREATE_DEVICE_VIDEO_SUPPORT`, and the pipeline needs the video processor for BGRA to
 NV12. Measured in the VM: without that flag, Desktop Duplication delivers frames.
 
+## Stream quality (2026-11-14, not released yet)
+
+Local commits after 0.1.4: per-second stats on the phone (`DishusVideo` log) and the PC (DEBUG);
+adaptive fps waits 5 s, then 10, 20, up to 30 s before going back to 60 after each failure;
+frames behind a keyframe get twice the in-flight limit (fewer keyframe storms); the bitrate also
+backs off on QUIC packet loss (over 2 %) and an RTT rise (over 2x normal + 40 ms); the phone's
+default resolution is its screen height ("Phone"), "Native" one tap away. Reconnect unchanged
+(a Wi-Fi to mobile data switch measured about 1 s).
+
+Mobile data, direct path, same video and settings (Native, Adaptive, Medium), RTT ~44 ms:
+
+| | before (3 min) | after (60 s) |
+|---|---|---|
+| 30/60 fps flips per minute | 5.8 | 4.0 |
+| time at 60 fps | 34 % | 48 % |
+| frames dropped on the PC per minute | 27 | 22 |
+| keyframes per minute | 5 | 4 |
+| worst delay growth | 750 ms | 336 ms |
+| longest freeze (gap between stats) | 1.8 s | 1.2 s |
+| median bitrate | 1239 kbit/s | 1853 kbit/s |
+
+One short run on a live mobile network, so this is noisy. Still bad: about 22 dropped frames
+and 4 keyframes a minute, and fps still changes 4 times a minute.
+
 ## Next (none started; each needs the owner's go)
 
 1. Windows video without a video processor: a CPU BGRA to NV12 fallback for the software
