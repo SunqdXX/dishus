@@ -19,6 +19,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.dishus.app.audio.AudioPlayer
 import org.dishus.app.input.Evdev
 import org.dishus.app.video.H264Decoder
 import uniffi.dishus_core.ControlEvent
@@ -50,6 +51,9 @@ data class RemoteUi(
     /** Set when retrying makes no sense (revoked, killed, expired). */
     val fatal: Boolean = false,
     val mods: Map<Int, ModState> = emptyMap(),
+    /** The PC can send audio (its DiShus speaks session/2). */
+    val audioSupported: Boolean = false,
+    val audioOn: Boolean = false,
 )
 
 /**
@@ -59,6 +63,9 @@ data class RemoteUi(
 class RemoteController(private val app: DishusApp, private val pcId: String) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val decodeDispatcher = Executors.newSingleThreadExecutor { r -> Thread(r, "dishus-decode") }.asCoroutineDispatcher()
+    private val audioDispatcher = Executors.newSingleThreadExecutor { r -> Thread(r, "dishus-audio") }.asCoroutineDispatcher()
+    /** Video arrival minus capture time over the last second (µs, raw clocks), for the A/V log. */
+    @Volatile private var videoDelayUs: Long? = null
     private val _ui = MutableStateFlow(RemoteUi())
     val ui: StateFlow<RemoteUi> = _ui
 
@@ -91,6 +98,7 @@ class RemoteController(private val app: DishusApp, private val pcId: String) {
             job?.join()
             withContext(decodeDispatcher) { decoder?.release(); decoder = null }
             decodeDispatcher.close()
+            audioDispatcher.close()
             scope.cancel()
         }
     }
@@ -136,8 +144,12 @@ class RemoteController(private val app: DishusApp, private val pcId: String) {
             var reason = "Cancelled"
             try {
                 session = s
+                val audioOk = s.audioSupported()
+                _ui.value = _ui.value.copy(audioSupported = audioOk, audioOn = audioOk && app.prefs.audioOn)
+                if (audioOk && app.prefs.audioOn) runCatching { s.setAudio(true) }
                 coroutineScope {
                     val video = launch(decodeDispatcher) { quietly("video") { videoLoop(s) } }
+                    val audio = launch(audioDispatcher) { quietly("audio") { audioLoop(s) } }
                     val stats = launch { quietly("stats") { statsLoop(s) } }
                     reason = try {
                         controlLoop(s)
@@ -146,7 +158,7 @@ class RemoteController(private val app: DishusApp, private val pcId: String) {
                     } catch (e: Exception) {
                         "Error: ${e.message?.take(80)}"
                     }
-                    video.cancel(); stats.cancel()
+                    video.cancel(); audio.cancel(); stats.cancel()
                 }
             } finally {
                 session = null
@@ -200,6 +212,7 @@ class RemoteController(private val app: DishusApp, private val pcId: String) {
                     runCatching { app.core.recordRenewal(pcId, ev.expiresAt); app.persistVault() }
                 }
                 is ControlEvent.Notice -> _ui.value = _ui.value.copy(notice = ev.message)
+                is ControlEvent.AudioStarted -> Log.i("DishusAudio", "PC audio started: ${ev.sampleRate} Hz, ${ev.channels} ch")
                 is ControlEvent.Closed -> return ev.reason
             }
         }
@@ -238,6 +251,7 @@ class RemoteController(private val app: DishusApp, private val pcId: String) {
                     "kbps=${(bytes * 8 / 1000 / secs).toInt()} delay_avg=${delaySumUs / 1000 / rx}ms " +
                     "delay_max=${delayMaxUs / 1000}ms decode_avg=${dec?.first?.let { "%.1f".format(it) }}ms " +
                     "decode_max=${dec?.second?.let { "%.1f".format(it) }}ms rtt=${s.rttMs()}ms path=${s.path()}")
+                videoDelayUs = baseDelayUs + delaySumUs / rx
                 rx = 0; fed = 0; rejected = 0; noDecoder = 0; keys = 0; kfReq = 0; lastLog = now
                 bytes = 0; delaySumUs = 0; delayMaxUs = 0
             }
@@ -258,6 +272,40 @@ class RemoteController(private val app: DishusApp, private val pcId: String) {
                 }
             }
         }
+    }
+
+    /** Only touched on [audioDispatcher]. One per audio stream: the PC numbers packets from 1. */
+    private var player: AudioPlayer? = null
+
+    private fun releasePlayer() { player?.release(); player = null }
+
+    /** Plays PC audio while it's on. */
+    private suspend fun audioLoop(s: RemoteSession) {
+        try {
+            while (true) {
+                val p = s.nextAudio() ?: return
+                if (!_ui.value.audioOn) continue // turned off; stragglers still in flight
+                val pl = player ?: AudioPlayer(app).also { it.setVolume(app.prefs.audioVolume); player = it }
+                pl.play(p.seq.toLong(), p.ptsUs.toLong(), p.data, videoDelayUs)
+            }
+        } finally {
+            withContext(NonCancellable) { releasePlayer() }
+        }
+    }
+
+    /** One tap: PC audio on or off; remembered for next time. */
+    fun setAudio(on: Boolean) {
+        if (!_ui.value.audioSupported) return
+        app.prefs.audioOn = on
+        _ui.value = _ui.value.copy(audioOn = on)
+        send { it.setAudio(on) }
+        // Off: free the player now (audio focus, the speaker path); a new stream gets a new one.
+        if (!on) scope.launch(audioDispatcher) { releasePlayer() }
+    }
+
+    fun setVolume(v: Float) {
+        app.prefs.audioVolume = v
+        scope.launch(audioDispatcher) { player?.setVolume(v) }
     }
 
     private suspend fun statsLoop(s: RemoteSession) {

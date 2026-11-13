@@ -23,6 +23,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -72,6 +73,12 @@ fun RemoteScreen(app: DishusApp, pcId: String, onExit: () -> Unit) {
                     if (ui.connected) " ${ui.path} · app ${ui.rttMs} ms" else " ${ui.status.take(48)}",
                     color = Color.White, style = MaterialTheme.typography.labelSmall,
                 )
+                if (ui.audioSupported) {
+                    // One tap: PC sound on/off (off until first turned on).
+                    TextButton(onClick = { controller.setAudio(!ui.audioOn) }) {
+                        Text(if (ui.audioOn) "🔊" else "🔇", color = Color.White)
+                    }
+                }
                 TextButton(onClick = { sheet = true }) { Text("⚙", color = Color.White) }
             }
             if (!ui.connected) {
@@ -134,6 +141,17 @@ private fun QuickSettings(app: DishusApp, c: RemoteController, onDismiss: () -> 
                 listOf("Phone" to org.dishus.app.data.Prefs.PHONE_HEIGHT, "Native" to 0, "1080p" to 1080, "720p" to 720),
                 s.maxHeight.toInt(),
             ) { apply(s.copy(maxHeight = it.toUShort())) }
+            Text("PC sound", style = MaterialTheme.typography.labelLarge)
+            if (ui.audioSupported) {
+                ChipRow(listOf("Off" to false, "On" to true), ui.audioOn) { c.setAudio(it) }
+                var vol by remember { mutableStateOf(app.prefs.audioVolume) }
+                Slider(value = vol, onValueChange = { vol = it; c.setVolume(it) }, enabled = ui.audioOn)
+            } else {
+                Text(
+                    if (ui.connected) "Update DiShus on the PC to hear its sound." else "—",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
             if (ui.monitors.size > 1) {
                 Text("Monitor", style = MaterialTheme.typography.labelLarge)
                 ChipRow(ui.monitors.map { it.name to it.index.toInt() }, s.monitor.toInt()) { apply(s.copy(monitor = it.toUByte())) }

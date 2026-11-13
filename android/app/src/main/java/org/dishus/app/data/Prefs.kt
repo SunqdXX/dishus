@@ -44,6 +44,15 @@ class Prefs(context: Context) {
         get() = sp.getFloat("pointer_speed", 1.6f)
         set(v) = sp.edit().putFloat("pointer_speed", v.coerceIn(0.3f, 5f)).apply()
 
+    /** PC audio: off until the user turns it on once; remembered after that. */
+    var audioOn: Boolean
+        get() = sp.getBoolean("audio_on", false)
+        set(v) = sp.edit().putBoolean("audio_on", v).apply()
+
+    var audioVolume: Float
+        get() = sp.getFloat("audio_volume", 1f)
+        set(v) = sp.edit().putFloat("audio_volume", v.coerceIn(0f, 1f)).apply()
+
     var relays: List<String>
         get() = sp.getString("relays", "")!!.split('\n').map { it.trim() }.filter { it.isNotEmpty() }
         set(v) = sp.edit().putString("relays", v.joinToString("\n")).apply()
