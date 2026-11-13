@@ -6,6 +6,7 @@
 //! cargo run -p dishus-core --example desktop_client -- view | ffplay -fflags nobuffer -flags low_delay -framedrop -f h264 -
 //! cargo run -p dishus-core --example desktop_client -- keys 125,2   # tap Super+1
 //! cargo run -p dishus-core --example desktop_client -- mouse move:200:0,right   # move, right-click
+//! cargo run -p dishus-core --example desktop_client -- audio --seconds 10   # count PC audio packets
 //! ```
 //!
 //! State (identity + paired PC) is kept in `$DISHUS_CLIENT_DIR` (default
@@ -112,7 +113,7 @@ async fn main() -> Result<()> {
             v.pcs.push(pc);
             save(&v)?;
         }
-        "view" | "keys" | "mouse" | "renew" => {
+        "view" | "keys" | "mouse" | "renew" | "audio" => {
             let pc = v
                 .pcs
                 .last()
@@ -198,6 +199,12 @@ async fn main() -> Result<()> {
                 s.close().await;
                 return Ok(());
             }
+            if cmd == "audio" {
+                let secs = arg_val(&args, "--seconds")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(10);
+                return audio_stats(&s, secs).await;
+            }
             if cmd == "renew" {
                 s.send(ClientMsg::RenewPairing {
                     days: arg_val(&args, "--days")
@@ -253,5 +260,64 @@ async fn main() -> Result<()> {
         ),
     }
     client.close().await;
+    Ok(())
+}
+
+/// Turn PC audio on for `secs` and print packet statistics (no audio is played or stored).
+async fn audio_stats(s: &dishus_core::Session, secs: u64) -> Result<()> {
+    if !s.audio_supported() {
+        bail!("this PC's DiShus is too old for audio (session/1)");
+    }
+    s.send(ClientMsg::SetAudio { on: true })?;
+    let t0 = Instant::now();
+    let deadline = t0 + Duration::from_secs(secs);
+    let (mut n, mut bytes, mut gaps, mut reordered) = (0u64, 0u64, 0u64, 0u64);
+    let mut last: Option<u32> = None;
+    let mut started = None;
+    let mut pts = Vec::new();
+    loop {
+        tokio::select! {
+            c = s.next_control() => match c {
+                Some(dishus_proto::ServerMsg::AudioStarted { sample_rate, channels }) => {
+                    started = Some(t0.elapsed());
+                    eprintln!("audio started: {sample_rate} Hz, {channels} ch, after {} ms",
+                        t0.elapsed().as_millis());
+                }
+                Some(dishus_proto::ServerMsg::Notice { message, .. }) => eprintln!("notice: {message}"),
+                Some(_) => {}
+                None => bail!("session closed"),
+            },
+            p = s.next_audio() => {
+                let Some(p) = p else { bail!("session closed") };
+                n += 1;
+                bytes += p.data.len() as u64;
+                match last {
+                    Some(l) if p.header.seq <= l => reordered += 1,
+                    Some(l) => gaps += u64::from(p.header.seq - l - 1),
+                    None => {}
+                }
+                last = Some(last.map_or(p.header.seq, |l| l.max(p.header.seq)));
+                pts.push(p.header.pts_us);
+            }
+            _ = tokio::time::sleep_until(deadline.into()) => break,
+        }
+    }
+    s.send(ClientMsg::SetAudio { on: false })?;
+    let span = started.map_or(0.0, |t| (deadline - t0 - t).as_secs_f64());
+    let steps: Vec<u64> = pts.windows(2).map(|w| w[1].saturating_sub(w[0])).collect();
+    let median = {
+        let mut v = steps.clone();
+        v.sort_unstable();
+        v.get(v.len() / 2).copied().unwrap_or(0)
+    };
+    println!(
+        "audio: {n} packets in {span:.1} s ({:.1}/s), {:.0} kbit/s payload, {gaps} missing, \
+         {reordered} out of order, median pts step {} us",
+        n as f64 / span.max(0.001),
+        bytes as f64 * 8.0 / 1000.0 / span.max(0.001),
+        median
+    );
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    s.close().await;
     Ok(())
 }

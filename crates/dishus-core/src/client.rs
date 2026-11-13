@@ -245,6 +245,13 @@ impl Client {
     }
 }
 
+/// One Opus packet from the PC (session/2). `seq` gaps are lost or dropped packets.
+#[derive(Debug, Clone)]
+pub struct AudioPacket {
+    pub header: dishus_proto::AudioHeader,
+    pub data: Bytes,
+}
+
 /// Video frame delivered in order, ready for the decoder.
 #[derive(Debug, Clone)]
 pub struct VideoPacket {
@@ -257,6 +264,7 @@ pub struct Session {
     tx: mpsc::Sender<ClientMsg>,
     control_rx: tokio::sync::Mutex<mpsc::Receiver<ServerMsg>>,
     video_rx: tokio::sync::Mutex<mpsc::Receiver<VideoPacket>>,
+    audio_rx: tokio::sync::Mutex<mpsc::Receiver<AudioPacket>>,
     rtt_ms: Arc<AtomicU64>,
     closed: Arc<AtomicBool>,
     /// session/2 was negotiated: the PC can send audio.
@@ -494,16 +502,36 @@ impl Session {
             }
         });
 
+        // Audio receiver: datagrams, checked and handed on; never waits for the player (a full
+        // queue drops the packet, the player conceals it).
+        let (aud_tx, aud_rx) = mpsc::channel::<AudioPacket>(32);
+        let a_conn = conn.clone();
+        let audio = tokio::spawn(async move {
+            while let Ok(d) = a_conn.read_datagram().await {
+                let Ok((header, opus)) = dishus_proto::AudioHeader::decode(&d) else {
+                    continue;
+                };
+                let p = AudioPacket {
+                    header,
+                    data: d.slice_ref(opus),
+                };
+                if let Err(mpsc::error::TrySendError::Closed(_)) = aud_tx.try_send(p) {
+                    break;
+                }
+            }
+        });
+
         Ok(Self {
             audio_supported: conn.alpn() == ALPN_SESSION_V2,
             conn,
             tx,
             control_rx: tokio::sync::Mutex::new(ctl_rx),
             video_rx: tokio::sync::Mutex::new(vid_rx),
+            audio_rx: tokio::sync::Mutex::new(aud_rx),
             rtt_ms,
             closed,
             timed_out,
-            tasks: vec![writer, reader, video, watchdog],
+            tasks: vec![writer, reader, video, audio, watchdog],
         })
     }
 
@@ -538,6 +566,11 @@ impl Session {
 
     pub async fn next_video(&self) -> Option<VideoPacket> {
         self.video_rx.lock().await.recv().await
+    }
+
+    /// Next Opus packet, in arrival order (datagrams can arrive out of order: check `seq`).
+    pub async fn next_audio(&self) -> Option<AudioPacket> {
+        self.audio_rx.lock().await.recv().await
     }
 
     /// Application-level round trip (includes PC processing), ms. 0 until the first Pong.

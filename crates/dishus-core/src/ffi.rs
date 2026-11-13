@@ -171,6 +171,16 @@ pub struct VideoFrame {
     pub data: Vec<u8>,
 }
 
+/// One Opus packet: 48 kHz stereo, 20 ms.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct AudioPacket {
+    /// +1 per packet the PC encoded; gaps are lost or dropped packets.
+    pub seq: u32,
+    /// Capture time, microseconds, on the same PC clock as `VideoFrame::pts_us`.
+    pub pts_us: u64,
+    pub data: Vec<u8>,
+}
+
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct RelaySettings {
     /// Empty = iroh's public default relays.
@@ -565,6 +575,22 @@ impl RemoteSession {
             seq: p.header.seq,
             pts_us: p.header.pts_us,
             keyframe: p.header.is_keyframe(),
+            data: p.data.to_vec(),
+        })
+    }
+
+    /// Next audio packet; None once the session is closed.
+    pub async fn next_audio(&self) -> Option<AudioPacket> {
+        let s = self.session.clone();
+        let p = self
+            .handle
+            .spawn(async move { s.next_audio().await })
+            .await
+            .ok()
+            .flatten()?;
+        Some(AudioPacket {
+            seq: p.header.seq,
+            pts_us: p.header.pts_us,
             data: p.data.to_vec(),
         })
     }
