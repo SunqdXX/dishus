@@ -170,10 +170,12 @@ pam_faillock); SDDM's PAM also uses pam_faillock (defaults: 3 failures, 10 minut
    pairings last 30 days, renewed only from inside a session.
 6. Brute force: the phone's key only exists while the app is unlocked, and the app asks its
    password again before every login-mode connection. On the PC: pam_faillock already locks
-   after 3 failures. The boot daemon also counts Enter presses: 3 in a session with no login
-   following ends the session and blocks that phone for 15 minutes; 10 in a day turns login
-   mode off for that phone until re-allowed from a session. Every use is logged and shown as
-   a notification at the next login.
+   after 3 failures (checked: SDDM's PAM includes system-login, then system-auth). The boot
+   daemon adds limits a phone can't dodge (counting Enter presses can be, by clicking the
+   login button): each login-mode session lasts at most 3 minutes, at most 3 sessions per hour
+   per phone, and after 5 sessions in a day with no login following, login mode is off for
+   that phone until re-allowed from a session. Every use is logged and shown as a notification
+   at the next login.
 7. Same Wi-Fi: nothing changes from today. QUIC with keys, unknown phones are dropped after
    the handshake before any data, no TCP port, nothing shown without a paired key. Optional
    `boot.direct_only`.
@@ -193,6 +195,10 @@ Windows (later, maybe): a SYSTEM service that starts a helper in the console ses
 Winlogon desktop (DXGI duplication and SendInput work there only as SYSTEM), plus SendSAS for
 Ctrl+Alt+Del. This is how RustDesk does it. It would also fix UAC prompts. It is a network
 service running as SYSTEM: a big risk and a lot of code. Only worth it if friends really ask.
+
+Unknowns, all untested: the Xsetup grant, passing a uinput fd to the service, NVENC as a
+system user, telling the greeter apart from a user session in logind, and whether the lock
+screen shows in the picture on Hyprland.
 
 ## Next (none started; each needs the owner's go)
 
