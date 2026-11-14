@@ -157,11 +157,17 @@ async fn run_boot() -> Result<()> {
                 .unwrap_or_else(|_| EnvFilter::new("info,iroh=warn,noq=warn,noq_proto=warn")),
         )
         .with_target(false)
+        .with_ansi(false)
         .without_time() // the journal has the time
         .init();
     rustix::process::umask(rustix::fs::Mode::from_raw_mode(0o077));
     let paths = Paths::boot_from_env()?;
     paths.ensure()?;
+    // The owner reaches control.sock (each caller is checked) and reads `history` here.
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&paths.runtime_dir, std::fs::Permissions::from_mode(0o755))?;
+    }
     let _instance = paths.lock_instance(std::time::Duration::from_secs(10))?;
     let cfg = Config::load(&paths)?;
     let devices = DeviceStore::load(&paths)?;

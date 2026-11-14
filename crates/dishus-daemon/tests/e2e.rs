@@ -1114,6 +1114,13 @@ async fn login_mode_drops_input_when_the_picture_freezes() {
     })
     .unwrap();
     wait_for(|| pc.input.log().contains(&"key 20 up".to_string())).await;
+    // held down while the picture is live
+    s.send(ClientMsg::Key {
+        code: 40,
+        down: true,
+    })
+    .unwrap();
+    wait_for(|| pc.input.log().contains(&"key 40 down".to_string())).await;
     tokio::time::sleep(dishus_daemon::boot::VIDEO_FRESH + Duration::from_millis(500)).await;
     s.send(ClientMsg::Key {
         code: 30,
@@ -1121,8 +1128,15 @@ async fn login_mode_drops_input_when_the_picture_freezes() {
     })
     .unwrap();
     s.send(ClientMsg::MouseMove { dx: 5, dy: 5 }).unwrap();
+    // a release still passes: dropping it would leave the key held (auto-repeating)
+    s.send(ClientMsg::Key {
+        code: 40,
+        down: false,
+    })
+    .unwrap();
     tokio::time::sleep(Duration::from_millis(400)).await;
     let log = pc.input.log();
+    assert!(log.contains(&"key 40 up".to_string()), "{log:?}");
     assert!(
         !log.iter()
             .any(|l| l.starts_with("key 30") || l.starts_with("move")),

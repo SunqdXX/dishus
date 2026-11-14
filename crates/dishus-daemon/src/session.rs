@@ -126,6 +126,15 @@ impl VideoSeen {
         self.last
             .store(self.t0.elapsed().as_millis() as u64 + 1, Ordering::Relaxed);
     }
+    fn age_text(&self) -> String {
+        match self.last.load(Ordering::Relaxed).checked_sub(1) {
+            None => "none yet".into(),
+            Some(t) => format!(
+                "{} ms ago",
+                (self.t0.elapsed().as_millis() as u64).saturating_sub(t)
+            ),
+        }
+    }
     fn fresh(&self, within: Duration) -> bool {
         match self.last.load(Ordering::Relaxed).checked_sub(1) {
             None => false,
@@ -369,10 +378,27 @@ pub async fn handle(state: Arc<AppState>, conn: Connection) -> Result<()> {
                 };
                 last_rx = tokio::time::Instant::now();
                 held_released = false;
-                let input_ok = !login_mode || seen.fresh(crate::boot::VIDEO_FRESH);
-                if !input_ok && !warned_unseen {
+                // Login mode: no live picture, no input. Releases always pass: they can't type
+                // anything, and dropping one would leave a key held down (auto-repeating).
+                let is_release = matches!(
+                    msg,
+                    ClientMsg::Key { down: false, .. } | ClientMsg::MouseButton { down: false, .. }
+                );
+                let input_ok =
+                    !login_mode || is_release || seen.fresh(crate::boot::VIDEO_FRESH);
+                let is_input = matches!(
+                    msg,
+                    ClientMsg::Key { .. }
+                        | ClientMsg::MouseMove { .. }
+                        | ClientMsg::MouseButton { .. }
+                        | ClientMsg::Scroll { .. }
+                );
+                if !input_ok && is_input && !warned_unseen {
                     warned_unseen = true;
-                    tracing::warn!("{name}: login mode: input dropped, no fresh picture of the login screen");
+                    tracing::warn!(
+                        "{name}: login mode: input dropped, no fresh picture of the login screen (last frame: {})",
+                        seen.age_text()
+                    );
                 }
                 match handle_msg(&state, &peer, v2, input_ok, msg, &out_tx, &vid_tx, &mut audio).await {
                     Ok(true) => {}

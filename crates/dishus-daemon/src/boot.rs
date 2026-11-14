@@ -284,13 +284,16 @@ impl BootState {
         let Some(f) = &self.history_file else { return };
         let res = (|| -> std::io::Result<()> {
             use std::io::Write;
-            #[cfg(unix)]
-            use std::os::unix::fs::OpenOptionsExt;
             let mut o = std::fs::OpenOptions::new();
             o.create(true).append(true);
+            let mut file = o.open(f)?;
+            // the owner reads it (the daemon's umask would leave it 0600)
             #[cfg(unix)]
-            o.mode(0o644); // the owner's daemon reads it to tell them at the next login
-            writeln!(o.open(f)?, "{line}")
+            {
+                use std::os::unix::fs::PermissionsExt;
+                file.set_permissions(std::fs::Permissions::from_mode(0o644))?;
+            }
+            writeln!(file, "{line}")
         })();
         if let Err(e) = res {
             tracing::debug!("login mode history: {e}");
@@ -347,8 +350,12 @@ pub async fn watch_seat(state: Arc<AppState>) {
             }),
             None => (Seat::Other, false),
         };
+        let before = boot.greeter_display();
         if boot.set_seat(seat.clone()) {
             tracing::info!("login mode: seat0 now {seat:?}");
+            if let Some(d) = before {
+                drop_x_access(&d).await;
+            }
             if seat == Seat::Other {
                 let n = state.end_all_sessions(dishus_proto::ByeReason::Normal);
                 if n > 0 {
@@ -362,6 +369,26 @@ pub async fn watch_seat(state: Arc<AppState>) {
         }
         was_user = user;
         tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+/// Give back the X access SDDM's Xsetup granted us (`xhost +SI:localuser:dishus-boot`), so a
+/// user's X11 session on the same display is never open to this user. Best effort: the X
+/// server usually goes away with the login screen anyway.
+#[cfg(not(windows))]
+async fn drop_x_access(disp: &str) {
+    let Ok(me) = std::env::var("USER") else {
+        return;
+    };
+    let run = tokio::process::Command::new("xhost")
+        .arg(format!("-SI:localuser:{me}"))
+        .env("DISPLAY", disp)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    match tokio::time::timeout(Duration::from_secs(3), run).await {
+        Ok(Ok(st)) if st.success() => tracing::info!("login mode: gave back X access to {disp}"),
+        other => tracing::debug!("login mode: xhost -SI on {disp}: {other:?}"),
     }
 }
 
