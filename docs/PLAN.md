@@ -12,14 +12,25 @@
 | f | Windows | Desktop Duplication + Media Foundation H.264, SendInput, per-user install (by yasinlol). Released in 0.1.3 |
 | g | Windows test VM | Unattended Windows 11 VM under user-mode libvirt, `scripts/vm-*.sh`, `docs/WINDOWS-TESTING.md` |
 
-## Status (2026-11-13)
+## Status (2026-11-15)
 
 Released: 0.1.0 to 0.1.4 (Linux, Android; Windows since 0.1.3). 0.1.4 turns Caps/Num/Scroll
 Lock back off when a phone session ends.
 0.31 (2026-11-14): PC sound on the phone (Linux PCs), steadier stream on weak links, phone
-screen height as the default resolution. Versions from now on: 0.31, 0.69, 1.31, 1.69, ...
-0.32 (2026-11-15, the owner's choice of number): X11/XFCE capture fix, sound capture restart
-when it delivers too few packets, `install.sh` restarts the service on update, README rewrite.
+screen height as the default resolution.
+0.32 (released 2026-11-15, latest; the owner picks each version number): X11/XFCE capture fix,
+sound capture restart when it delivers too few packets, `install.sh` restarts the service on
+update, README rewrite. Checked before publishing, with the files from the release: the APK
+installed over 0.31 on the owner's phone (pairings kept); the tarball's `install.sh` on the
+owner's PC (Hyprland) restarted the service, and the phone showed picture, keyboard, mouse and
+sound; the exe in the Windows VM installed, paired and typed (no video there, as known).
+Untested in 0.32: the Windows exe on real hardware, `pair`/`setup-capture` on a real X11
+desktop, multi-monitor X11, LightDM/GDM, keyboard/mouse on X11.
+
+Open: file send (branch `file-send`, needs the phone test), Windows sound (branch
+`windows-sound`, needs a real Windows PC), the audio capture glitch (the restart is a
+workaround; the PC capture still drops to ~37 packets/s now and then), back-to-back sessions
+on Windows (below). Login mode is parked (branch `login-mode`).
 
 Tested on Windows in the VM with 0.1.4: install, firewall prompt, pairing, keyboard, mouse,
 Caps Lock undo, auto-start, `status`, `doctor`, and a standard (non-admin) user keeping the same
