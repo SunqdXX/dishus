@@ -76,6 +76,28 @@ Not done: Windows (WASAPI loopback + libopus, needs CI and a real Windows PC); o
 stretch at 38 packets/s on Wi-Fi was not explained; following a changed default output is
 untested.
 
+## X11 / XFCE capture fix (branch `x11-fix`, 2026-11-14; not merged, not released)
+
+Bug: on an X11 session (XFCE under SDDM) every stream failed with "Element failed to change
+its state". Causes and fixes:
+- `dishus.service` had `PrivateTmp=yes`, which hid the session's X auth cookie (SDDM keeps it
+  in `/tmp`), so X refused the capture ("Authorization required"). The unit no longer uses
+  it; temp files go to `$XDG_RUNTIME_DIR/dishus` (`TMPDIR`).
+- The service can start before the X session exports `DISPLAY` to systemd, and then never
+  had one ("no X11 display" until a restart). Each capture now reads `DISPLAY`/`XAUTHORITY`
+  from the systemd user manager, only for X11 sessions (nothing changes when the manager has
+  a Wayland display).
+- A pipeline that can't start now names the element and its error instead of the generic
+  GStreamer message; an unreadable auth file is reported as such.
+
+Tested: Xvfb tests with an auth cookie (stream, missing cookie, wrong cookie), also in CI.
+On a real XFCE desktop (X11, one monitor, SDDM), with the dev build in the new unit's
+sandbox and no `DISPLAY` of its own, after a log out / log in: the phone streamed via NVENC
+(checked in the log only) and via x264 with the GPU hidden from the service (seen on the phone).
+Not tested: Hyprland after this change (no behaviour change intended there), multi-monitor
+X11, other display managers (LightDM, GDM on X11), X sessions that don't export `DISPLAY` to
+systemd. Installed users get the new unit only when they reinstall.
+
 ## Next (none started; each needs the owner's go)
 
 1. Later (the owner postponed it on 2026-11-14): Windows video without a video processor, a
