@@ -104,6 +104,9 @@ enum BootCmd {
 /// The login-mode daemon's control socket (systemd RuntimeDirectory=dishus-boot).
 #[cfg(not(windows))]
 const BOOT_SOCKET: &str = "/run/dishus-boot/control.sock";
+/// Present when packaging/boot-mode/install.sh installed login mode.
+#[cfg(not(windows))]
+const BOOT_UNIT: &str = "/etc/systemd/system/dishus-boot.service";
 
 /// `dishus doctor` runs `dishus-daemon --doctor`, preferring the daemon installed next to this
 /// binary (the tarball and `cargo install` put them together), then PATH.
@@ -516,31 +519,30 @@ async fn main() -> Result<()> {
             }
             Err(e) => return Err(e),
         },
-        Cmd::Revoke { device } => match call(
-            IpcRequest::Revoke {
+        Cmd::Revoke { device } => {
+            // Login mode keeps its own list: always try it too, whatever happens below.
+            #[cfg(not(windows))]
+            also_boot(IpcRequest::Revoke {
                 selector: device.clone(),
-            },
-            short,
-        )
-        .await
-        {
-            Ok(IpcResponse::Ok(m)) => {
-                println!("{m}");
-                #[cfg(not(windows))]
-                also_boot(IpcRequest::Revoke { selector: device }).await;
-            }
-            Ok(r) => bail!("unexpected reply {r:?}"),
-            Err(e) if format!("{e}").contains("daemon not running") => {
-                #[cfg(not(windows))]
-                also_boot(IpcRequest::Revoke {
+            })
+            .await;
+            match call(
+                IpcRequest::Revoke {
                     selector: device.clone(),
-                })
-                .await;
-                let n = offline_revoke(&device)?;
-                println!("revoked {n} (daemon was not running; edited devices.toml)");
+                },
+                short,
+            )
+            .await
+            {
+                Ok(IpcResponse::Ok(m)) => println!("{m}"),
+                Ok(r) => bail!("unexpected reply {r:?}"),
+                Err(e) if format!("{e}").contains("daemon not running") => {
+                    let n = offline_revoke(&device)?;
+                    println!("revoked {n} (daemon was not running; edited devices.toml)");
+                }
+                Err(e) => return Err(e),
             }
-            Err(e) => return Err(e),
-        },
+        }
         Cmd::Renew { device, days } => match call(
             IpcRequest::Renew {
                 selector: device,
@@ -562,6 +564,8 @@ async fn main() -> Result<()> {
             }
             Ok(r) => bail!("unexpected reply {r:?}"),
             Err(e) => {
+                #[cfg(not(windows))]
+                also_boot(IpcRequest::Kill).await;
                 eprintln!("kill via daemon failed: {e:#}\nStopping the service instead.");
                 // Persist lockdown first so a restart (or reboot) of the daemon stays locked.
                 let lock = write_lockdown_offline();
@@ -619,12 +623,19 @@ fn running_as_root() -> bool {
 #[cfg(not(windows))]
 async fn also_boot(req: IpcRequest) {
     if !std::path::Path::new(BOOT_SOCKET).exists() {
+        if std::path::Path::new(BOOT_UNIT).exists() {
+            eprintln!(
+                "! login mode is installed but not running, so this did not reach it; its own list\n  \
+                 is unchanged (dishus boot list once it runs). To remove it: sudo systemctl disable --now dishus-boot"
+            );
+        }
         return;
     }
     match call_boot(req, Duration::from_secs(3)).await {
         Ok(IpcResponse::Ok(m)) => println!("login mode: {m}"),
         Ok(_) => {}
-        Err(e) => eprintln!("login mode: {e:#} (check with `dishus boot list`)"),
+        Err(e) if format!("{e}").contains("no device") => {} // not allowed there anyway
+        Err(e) => eprintln!("! login mode: {e:#} (check with `dishus boot list`)"),
     }
 }
 
