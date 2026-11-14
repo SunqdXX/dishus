@@ -42,7 +42,7 @@ n0-future = "0.3"
 
 [target.'cfg(not(windows))'.dependencies]
 rustix = { version = "1", features = ["process", "system", "fs"] }
-zbus = { version = "6", default-features = false, features = ["tokio"] }
+zbus = { version = "6", default-features = false, features = ["tokio", "proxy"] }
 ashpd = { version = "0.14", default-features = false, features = ["tokio", "screencast"], optional = true }
 gstreamer = { version = "0.25", optional = true }
 gstreamer-app = { version = "0.25", optional = true }

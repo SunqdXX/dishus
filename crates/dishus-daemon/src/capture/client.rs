@@ -82,11 +82,26 @@ impl WorkerProvider {
     }
 
     fn spawn(&self, mode: &str) -> Result<Child> {
+        self.spawn_with(mode, None)
+    }
+
+    /// `x11`: the current X11 session's display, which replaces whatever this daemon inherited.
+    fn spawn_with(&self, mode: &str, x11: Option<&X11Env>) -> Result<Child> {
         let mut c = Command::new(&self.exe);
         c.arg("--capture-worker")
             .arg(mode)
-            .envs(self.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-            .stdin(Stdio::piped())
+            .envs(self.env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+        #[cfg(windows)]
+        let _ = x11;
+        #[cfg(not(windows))]
+        if let Some(x) = x11 {
+            c.env("DISPLAY", &x.display).env_remove("WAYLAND_DISPLAY");
+            match &x.xauthority {
+                Some(a) => c.env("XAUTHORITY", a),
+                None => c.env_remove("XAUTHORITY"),
+            };
+        }
+        c.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(self.stderr())
             .kill_on_drop(true);
@@ -118,11 +133,39 @@ impl WorkerProvider {
     }
 }
 
+#[cfg(not(windows))]
+use super::session_env::X11Env;
+/// Windows has no X11 session; never made.
+#[cfg(windows)]
+#[allow(dead_code)]
+struct X11Env;
+
+/// The X11 session's display as systemd knows it now (see `session_env`), so a daemon started
+/// before the session, or kept across a log out / log in, still finds the screen.
+#[cfg(not(windows))]
+async fn session_x11() -> Option<X11Env> {
+    let x = super::session_env::x11_from_manager().await?;
+    if std::env::var("DISPLAY").ok().as_deref() != Some(x.display.as_str())
+        || std::env::var("XAUTHORITY").ok() != x.xauthority
+    {
+        tracing::info!(
+            "capture: using the X11 session's display {} from systemd",
+            x.display
+        );
+    }
+    Some(x)
+}
+#[cfg(windows)]
+async fn session_x11() -> Option<X11Env> {
+    None
+}
+
 impl CaptureProvider for WorkerProvider {
     fn open(&self) -> BoxFuture<Result<Box<dyn CaptureSession>>> {
         let this = self.clone();
         Box::pin(async move {
-            let mut child = this.spawn("session")?;
+            let x11 = session_x11().await;
+            let mut child = this.spawn_with("session", x11.as_ref())?;
             let mut stdout = child.stdout.take().context("worker stdout")?;
             let mut stdin = child.stdin.take().context("worker stdin")?;
             // First event: Monitors or Failed.

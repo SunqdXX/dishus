@@ -14,6 +14,8 @@
 //! * **Test**: `DISHUS_TEST_SOURCE=1` streams a test pattern (no permission needed).
 
 pub mod client;
+#[cfg(not(windows))]
+pub mod session_env;
 pub mod throttle;
 pub mod wire;
 
