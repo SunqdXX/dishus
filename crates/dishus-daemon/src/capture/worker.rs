@@ -78,9 +78,26 @@ async fn open_capture(opts: &WorkerOptions) -> Result<Capture, String> {
         Err(PortalError::Other(e)) => return Err(format!("{e:#}")),
     }
     if std::env::var_os("DISPLAY").is_some() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
+        x11_auth_readable()?;
         return Ok(Capture::X11);
     }
     Err("no screen capture backend available (no portal ScreenCast, no X11 display)".into())
+}
+
+/// X refuses a client without the session's cookie ("Authorization required"), and GStreamer
+/// then only says "Element failed to change its state". Say what is wrong instead.
+fn x11_auth_readable() -> Result<(), String> {
+    let Some(path) = std::env::var_os("XAUTHORITY") else {
+        return Ok(()); // libX11 falls back to ~/.Xauthority
+    };
+    std::fs::File::open(&path).map(drop).map_err(|e| {
+        format!(
+            "X11 display {}: can't read the X auth file {} ({e}). The daemon must see the \
+             session's /tmp (no PrivateTmp in dishus.service; reinstall to update it)",
+            std::env::var("DISPLAY").unwrap_or_default(),
+            std::path::Path::new(&path).display()
+        )
+    })
 }
 
 pub async fn run(mode: &str, opts: WorkerOptions) -> Result<()> {
