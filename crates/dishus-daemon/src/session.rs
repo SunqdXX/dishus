@@ -621,6 +621,12 @@ async fn audio_task(
         })
         .await;
     let mut policy = AudioPolicy::default();
+    let mut watch = audio_policy::RateWatch::default();
+    // This second: packets from the capture, and jumps in their timestamps (> 30 ms: the
+    // capture skipped audio) to tell a slow source from one that drops.
+    let (mut got, mut pts_jumps, mut last_pts) = (0u32, 0u32, None::<u64>);
+    let mut second = tokio::time::interval(Duration::from_secs(1));
+    second.tick().await;
     let mut seq = 0u32;
     // Over ~10 s: sent, dropped under congestion, dropped for queueing, too big for a datagram.
     let (mut sent, mut congested, mut queued_out, mut too_big) = (0u32, 0u32, 0u32, 0u32);
@@ -632,6 +638,11 @@ async fn audio_task(
                 let Some(p) = p else {
                     return audio_unavailable(&out, "audio capture stopped".into()).await;
                 };
+                got += 1;
+                if last_pts.is_some_and(|l| p.pts_us.saturating_sub(l) > 30_000) {
+                    pts_jumps += 1;
+                }
+                last_pts = Some(p.pts_us);
                 seq = seq.wrapping_add(1);
                 let queued = audio_policy::DATAGRAM_SEND_BUFFER
                     .saturating_sub(conn.datagram_send_buffer_space());
@@ -656,6 +667,26 @@ async fn audio_task(
                         }
                     }
                 }
+            }
+            _ = second.tick() => {
+                if watch.second(got) {
+                    tracing::warn!(
+                        "audio: the capture gave only {got} packets in the last second for {} s \
+                         ({pts_jumps} timestamp jumps), restarting it",
+                        audio_policy::SLOW_SECS
+                    );
+                    drop(stream);
+                    stream = match state.capture.open_audio().await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            tracing::warn!("audio unavailable after restart: {e:#}");
+                            return audio_unavailable(&out, format!("{e:#}")).await;
+                        }
+                    };
+                    stream.control.set_bitrate(policy.kbps);
+                    last_pts = None;
+                }
+                (got, pts_jumps) = (0, 0);
             }
             _ = tick.tick() => {
                 if let Some(k) = policy.tick(Pressure::load(&pressure)) {
