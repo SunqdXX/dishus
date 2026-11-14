@@ -251,6 +251,20 @@ async fn handle(ctx: &IpcContext, req: IpcRequest) -> IpcResponse {
             Ok(s) => IpcResponse::Ok(s),
             Err(e) => err(format!("{e:#}")),
         },
+        IpcRequest::LoginEnroll => match st.open_login_enroll() {
+            Ok((token, ttl)) => {
+                let _ = timeout(Duration::from_secs(5), ctx.endpoint.online()).await;
+                let info: PairingInfo = pairing_info(&ctx.endpoint, st, *token);
+                IpcResponse::Pairing {
+                    uri: info.to_uri(),
+                    ttl_secs: ttl.as_secs(),
+                }
+            }
+            Err(e) => err(format!("{e:#}")),
+        },
+        IpcRequest::LoginEnrolled => {
+            IpcResponse::Enrolled(st.take_enrolled().map(|(id, name)| (id.to_string(), name)))
+        }
         IpcRequest::Allow { id, name, days } => {
             let Ok(peer) = id.parse::<iroh::EndpointId>() else {
                 return err("not a phone id (see `dishus list` in your session)");

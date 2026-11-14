@@ -137,6 +137,89 @@ impl PairingInfo {
     }
 }
 
+/// What `dishus boot allow` shows: a one-time pairing window on the logged-in PC (for the
+/// phone's new login-screen identity) plus where to find login mode, which has its own id:
+///
+/// ```text
+/// dishus://login?v=1&id=..&t=..&n=..&r=..&a=..&b=<base32 login-mode id>&br=<relay>..&ba=<ip:port>..
+/// ```
+///
+/// Secret like a pairing link (the token), single use, short-lived.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct LoginInfo {
+    pub pair: PairingInfo,
+    pub boot_id: [u8; 32],
+    pub boot_relays: Vec<String>,
+    pub boot_addrs: Vec<String>,
+}
+
+const LOGIN_PREFIX: &str = "dishus://login?";
+
+impl LoginInfo {
+    pub fn to_uri(&self) -> String {
+        let pair = self.pair.to_uri();
+        let mut s = String::from(LOGIN_PREFIX);
+        s.push_str(pair.strip_prefix(SCHEME_PREFIX).unwrap_or(&pair));
+        s.push_str("&b=");
+        s.push_str(&BASE32_NOPAD.encode(&self.boot_id));
+        for r in &self.boot_relays {
+            s.push_str("&br=");
+            s.push_str(&pct_encode(r));
+        }
+        for a in &self.boot_addrs {
+            s.push_str("&ba=");
+            s.push_str(&pct_encode(a));
+        }
+        s
+    }
+
+    pub fn from_uri(uri: &str) -> Result<Self, PairingUriError> {
+        if uri.len() > MAX_URI_LEN {
+            return Err(PairingUriError::TooLong);
+        }
+        let query = uri
+            .trim()
+            .strip_prefix(LOGIN_PREFIX)
+            .ok_or(PairingUriError::Scheme)?;
+        // the pairing part ignores the b/br/ba keys
+        let pair = PairingInfo::from_uri(&format!("{SCHEME_PREFIX}{query}"))?;
+        let mut boot_id = None;
+        let (mut boot_relays, mut boot_addrs) = (Vec::new(), Vec::new());
+        for kv in query.split('&') {
+            let Some((k, v)) = kv.split_once('=') else {
+                continue;
+            };
+            match k {
+                "b" => boot_id = Some(decode32(v).ok_or(PairingUriError::Field("b"))?),
+                "br" => {
+                    let r = pct_decode(v).ok_or(PairingUriError::Field("br"))?;
+                    if !(r.starts_with("https://") || r.starts_with("http://")) || r.len() > 256 {
+                        return Err(PairingUriError::Field("br"));
+                    }
+                    boot_relays.push(r);
+                }
+                "ba" => {
+                    let a = pct_decode(v).ok_or(PairingUriError::Field("ba"))?;
+                    if a.parse::<std::net::SocketAddr>().is_err() {
+                        return Err(PairingUriError::Field("ba"));
+                    }
+                    boot_addrs.push(a);
+                }
+                _ => {}
+            }
+        }
+        if boot_relays.len() > MAX_RELAYS || boot_addrs.len() > MAX_ADDRS {
+            return Err(PairingUriError::TooLong);
+        }
+        Ok(LoginInfo {
+            pair,
+            boot_id: boot_id.ok_or(PairingUriError::Field("b"))?,
+            boot_relays,
+            boot_addrs,
+        })
+    }
+}
+
 fn decode32(s: &str) -> Option<[u8; 32]> {
     let v = BASE32_NOPAD.decode(s.as_bytes()).ok()?;
     v.try_into().ok()
@@ -183,6 +266,28 @@ mod tests {
             relays: vec!["https://euc1-1.relay.n0.iroh-canary.iroh.link./".into()],
             addrs: vec!["192.168.1.10:41641".into(), "[fe80::1]:5000".into()],
         }
+    }
+
+    #[test]
+    fn login_roundtrip() {
+        let l = LoginInfo {
+            pair: sample(),
+            boot_id: [3; 32],
+            boot_relays: vec!["https://relay.example/".into()],
+            boot_addrs: vec!["10.0.0.2:4000".into()],
+        };
+        let uri = l.to_uri();
+        assert!(uri.starts_with("dishus://login?v=1&"));
+        assert_eq!(LoginInfo::from_uri(&uri).unwrap(), l);
+        // a pairing link is not a login code, and the other way round
+        assert_eq!(
+            LoginInfo::from_uri(&sample().to_uri()),
+            Err(PairingUriError::Scheme)
+        );
+        assert_eq!(PairingInfo::from_uri(&uri), Err(PairingUriError::Scheme));
+        // no login-mode id
+        let no_b = uri.split("&b=").next().unwrap();
+        assert_eq!(LoginInfo::from_uri(no_b), Err(PairingUriError::Field("b")));
     }
 
     #[test]

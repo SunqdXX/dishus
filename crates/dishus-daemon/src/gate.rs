@@ -59,14 +59,14 @@ impl EndpointHooks for Gate {
                 peer.fmt_short(),
                 String::from_utf8_lossy(conn.alpn())
             );
-            let code = if is_session(conn.alpn()) {
-                self.0.refusal_code(&peer)
+            let (code, reason) = if is_session(conn.alpn()) {
+                self.0.refusal(&peer)
             } else {
-                dishus_proto::close_code::REFUSED
+                (dishus_proto::close_code::REFUSED, Vec::new())
             };
             AfterHandshakeOutcome::Reject {
                 error_code: code.into(),
-                reason: Vec::new(),
+                reason,
             }
         }
     }

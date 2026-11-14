@@ -779,6 +779,7 @@ dependencies = [
  "dishus-proto",
  "dishus-win",
  "qrcode",
+ "tempfile",
  "tokio",
  "toml",
 ]

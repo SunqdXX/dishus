@@ -23,7 +23,7 @@ use crate::{
     config::Config,
     devices::{Device, DeviceStore, now_unix},
     notify::Notifier,
-    pairing::{PairCheck, Pairing},
+    pairing::{PairCheck, Pairing, Purpose},
     paths::{Paths, write_private},
 };
 
@@ -61,6 +61,8 @@ pub struct AppState {
     pub persist: bool,
     /// Set in login mode (`--boot`).
     pub boot: Option<Arc<crate::boot::BootState>>,
+    /// The last phone identity enrolled for the login screen (`dishus boot allow`).
+    pub enrolled: Mutex<Option<(EndpointId, String)>>,
 }
 
 impl AppState {
@@ -92,6 +94,7 @@ impl AppState {
             capture,
             persist: true,
             boot: None,
+            enrolled: Mutex::new(None),
         }
     }
 
@@ -120,12 +123,21 @@ impl AppState {
     /// Close code for a session connection that is not allowed: a known device learns why
     /// (lockdown / expired), an unknown or revoked one learns nothing.
     pub fn refusal_code(&self, id: &EndpointId) -> u32 {
+        self.refusal(id).0
+    }
+
+    /// [`Self::refusal_code`] plus the reason bytes; in login mode a known phone also learns
+    /// about the limits and whether the login screen is up.
+    pub fn refusal(&self, id: &EndpointId) -> (u32, Vec<u8>) {
         use dishus_proto::close_code;
         match self.device(id) {
-            None => close_code::REFUSED,
-            Some(_) if self.is_locked_down() => close_code::LOCKDOWN,
-            Some(d) if d.expires_at <= now_unix() => close_code::EXPIRED,
-            Some(_) => close_code::REFUSED,
+            None => (close_code::REFUSED, Vec::new()),
+            Some(_) if self.is_locked_down() => (close_code::LOCKDOWN, Vec::new()),
+            Some(d) if d.expires_at <= now_unix() => (close_code::EXPIRED, Vec::new()),
+            Some(_) => match self.boot.as_ref().and_then(|b| b.refusal(id)) {
+                Some(r) => r.close(),
+                None => (close_code::REFUSED, Vec::new()),
+            },
         }
     }
 
@@ -146,6 +158,21 @@ impl AppState {
     // ---- pairing ----
 
     pub fn open_pairing(&self) -> Result<(Zeroizing<[u8; TOKEN_LEN]>, Duration)> {
+        self.open_window(Purpose::Pair)
+    }
+
+    /// `dishus boot allow`: the phone scans a code and pairs a new, separate identity, which is
+    /// only recorded here (see [`Self::take_enrolled`]); it gets no access to this session.
+    pub fn open_login_enroll(&self) -> Result<(Zeroizing<[u8; TOKEN_LEN]>, Duration)> {
+        *self.enrolled.lock().expect("enrolled lock") = None;
+        self.open_window(Purpose::LoginEnroll)
+    }
+
+    pub fn take_enrolled(&self) -> Option<(EndpointId, String)> {
+        self.enrolled.lock().expect("enrolled lock").take()
+    }
+
+    fn open_window(&self, purpose: Purpose) -> Result<(Zeroizing<[u8; TOKEN_LEN]>, Duration)> {
         if self.boot.is_some() {
             anyhow::bail!("login mode never pairs; allow a phone with `sudo dishus boot allow`");
         }
@@ -153,11 +180,11 @@ impl AppState {
             anyhow::bail!("daemon is in lockdown; run `dishus unlock` first");
         }
         let ttl = Duration::from_secs(self.config.pairing_ttl_secs);
-        let tok = self
-            .pairing
-            .lock()
-            .expect("pairing lock")
-            .open(ttl, Instant::now())?;
+        let tok =
+            self.pairing
+                .lock()
+                .expect("pairing lock")
+                .open_for(purpose, ttl, Instant::now())?;
         Ok((tok, ttl))
     }
 
@@ -190,11 +217,11 @@ impl AppState {
         if self.lockdown.load(Ordering::SeqCst) {
             return PairResponse::Rejected;
         }
-        let verdict = self
-            .pairing
-            .lock()
-            .expect("pairing lock")
-            .check(&req.token, Instant::now());
+        let (verdict, purpose) = {
+            let mut p = self.pairing.lock().expect("pairing lock");
+            let purpose = p.purpose();
+            (p.check(&req.token, Instant::now()), purpose)
+        };
         match verdict {
             PairCheck::Accepted => {}
             PairCheck::Rejected | PairCheck::Closed => {
@@ -204,6 +231,18 @@ impl AppState {
                 );
                 return PairResponse::Rejected;
             }
+        }
+        if purpose == Some(Purpose::LoginEnroll) {
+            tracing::info!(
+                "login screen: {} enrolled ({}); `dishus boot allow` finishes it",
+                req.device_name,
+                peer.fmt_short()
+            );
+            *self.enrolled.lock().expect("enrolled lock") = Some((*peer, req.device_name.clone()));
+            return PairResponse::Accepted {
+                pc_name: self.config.pc_name.clone(),
+                expires_at: 0, // set by login mode when root allows it
+            };
         }
         let now = now_unix();
         let res = {

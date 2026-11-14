@@ -11,7 +11,18 @@ use dishus_proto::TOKEN_LEN;
 /// Wrong tokens tolerated before the window slams shut.
 pub const MAX_PAIR_FAILURES: u8 = 3;
 
+/// What a successful pairing does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Purpose {
+    /// A phone pairs with this PC (`dishus pair`).
+    Pair,
+    /// A phone's separate login-screen identity is recorded for `dishus boot allow`; it is not
+    /// paired with this session.
+    LoginEnroll,
+}
+
 struct Window {
+    purpose: Purpose,
     token: Zeroizing<[u8; TOKEN_LEN]>,
     deadline: Instant,
     failures: u8,
@@ -37,9 +48,19 @@ impl Pairing {
         ttl: Duration,
         now: Instant,
     ) -> anyhow::Result<Zeroizing<[u8; TOKEN_LEN]>> {
+        self.open_for(Purpose::Pair, ttl, now)
+    }
+
+    pub fn open_for(
+        &mut self,
+        purpose: Purpose,
+        ttl: Duration,
+        now: Instant,
+    ) -> anyhow::Result<Zeroizing<[u8; TOKEN_LEN]>> {
         let mut token = Zeroizing::new([0u8; TOKEN_LEN]);
         getrandom::fill(token.as_mut()).map_err(|e| anyhow::anyhow!("getrandom: {e}"))?;
         self.window = Some(Window {
+            purpose,
             token: token.clone(),
             deadline: now + ttl,
             failures: 0,
@@ -53,6 +74,10 @@ impl Pairing {
 
     pub fn is_open(&self, now: Instant) -> bool {
         self.window.as_ref().is_some_and(|w| now < w.deadline)
+    }
+
+    pub fn purpose(&self) -> Option<Purpose> {
+        self.window.as_ref().map(|w| w.purpose)
     }
 
     pub fn deadline(&self) -> Option<Instant> {

@@ -33,6 +33,12 @@ pub enum Refusal {
     Lockdown,
     /// The pairing expired.
     Expired,
+    /// Login mode: the hourly limit is reached; the next try is possible in this many seconds.
+    LoginLimit { retry_secs: u32 },
+    /// Login mode: blocked after too many sessions with no login.
+    LoginBlocked,
+    /// Login mode: the PC isn't showing the login screen.
+    NotAtLoginScreen,
 }
 
 impl std::fmt::Display for Refusal {
@@ -44,6 +50,19 @@ impl std::fmt::Display for Refusal {
             Refusal::Expired => {
                 "the pairing has expired; run `dishus renew` on the PC or pair again"
             }
+            Refusal::LoginLimit { retry_secs } => {
+                return write!(
+                    f,
+                    "limit reached (3 tries an hour), try again in {} min",
+                    retry_secs.div_ceil(60)
+                );
+            }
+            Refusal::LoginBlocked => {
+                "blocked after 5 tries with no login; on the PC run `dishus boot allow` again"
+            }
+            Refusal::NotAtLoginScreen => {
+                "the PC isn't showing the login screen (someone is logged in, or it's starting)"
+            }
         })
     }
 }
@@ -53,9 +72,20 @@ impl Refusal {
     fn from_conn_error(e: &iroh::endpoint::ConnectionError) -> Option<Self> {
         match e {
             iroh::endpoint::ConnectionError::ApplicationClosed(c) => {
+                use dishus_proto::close_code as code;
                 match u32::try_from(c.error_code.into_inner()).ok()? {
-                    dishus_proto::close_code::LOCKDOWN => Some(Refusal::Lockdown),
-                    dishus_proto::close_code::EXPIRED => Some(Refusal::Expired),
+                    code::LOCKDOWN => Some(Refusal::Lockdown),
+                    code::EXPIRED => Some(Refusal::Expired),
+                    code::LOGIN_LIMIT => Some(Refusal::LoginLimit {
+                        retry_secs: c
+                            .reason
+                            .get(..4)
+                            .and_then(|b| b.try_into().ok())
+                            .map(u32::from_be_bytes)
+                            .unwrap_or(3600),
+                    }),
+                    code::LOGIN_BLOCKED => Some(Refusal::LoginBlocked),
+                    code::NOT_AT_LOGIN_SCREEN => Some(Refusal::NotAtLoginScreen),
                     _ => None,
                 }
             }

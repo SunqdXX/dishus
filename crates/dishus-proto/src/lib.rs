@@ -27,7 +27,7 @@ pub mod video;
 pub use audio::AudioHeader;
 pub use frame::{FrameError, read_frame, write_frame};
 pub use msg::*;
-pub use pairing::{PairingInfo, PairingUriError};
+pub use pairing::{LoginInfo, PairingInfo, PairingUriError};
 pub use video::VideoHeader;
 
 /// ALPN of an authenticated remote-control session.
@@ -74,6 +74,12 @@ pub mod close_code {
     pub const LOCKDOWN: u32 = 2;
     /// The pairing expired; `dishus renew` on the PC or pair again.
     pub const EXPIRED: u32 = 3;
+    /// Login mode: the hourly limit is reached. Reason: seconds until the next try (u32 BE).
+    pub const LOGIN_LIMIT: u32 = 4;
+    /// Login mode: blocked after too many sessions with no login; allow it again on the PC.
+    pub const LOGIN_BLOCKED: u32 = 5;
+    /// Login mode: the PC isn't showing the login screen (someone is logged in, or starting).
+    pub const NOT_AT_LOGIN_SCREEN: u32 = 6;
 }
 
 /// Hard cap on a single control-stream frame (bytes, excluding the 4-byte length prefix).

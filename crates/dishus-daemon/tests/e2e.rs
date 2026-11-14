@@ -16,7 +16,7 @@ use dishus_daemon::{
         AudioControl, AudioPacket, AudioStream, BoxFut, BoxFuture, CaptureProvider, CaptureSession,
         EncodedStream, InputSink, StreamConfig, StreamControl, TrackedInput, VideoFrame,
     },
-    boot::{BootState, Seat},
+    boot::{BootState, Rules, Seat},
     config::Config,
     devices::DeviceStore,
     net::{NetOptions, spawn_router},
@@ -264,11 +264,23 @@ impl Pc {
     /// Login mode at the login screen, with `phone` allowed (`stall_after` as in
     /// [`FakeCaptureSession`]; `fail_capture`: no picture at all).
     async fn start_boot(stall_after: Option<u64>, fail_capture: bool, phone: &Client) -> Self {
+        Self::start_boot_with(stall_after, fail_capture, phone, Rules::default()).await
+    }
+
+    async fn start_boot_with(
+        stall_after: Option<u64>,
+        fail_capture: bool,
+        phone: &Client,
+        rules: Rules,
+    ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::under(dir.path());
         paths.ensure().unwrap();
-        let boot =
-            Arc::new(BootState::new(dir.path().join("limits.toml"), Some(1000), None).unwrap());
+        let boot = Arc::new(
+            BootState::new(dir.path().join("limits.toml"), Some(1000), None)
+                .unwrap()
+                .with_rules(rules),
+        );
         boot.set_seat(Seat::Greeter {
             display: ":0".into(),
         });
@@ -1149,7 +1161,10 @@ async fn login_mode_refuses_away_from_the_login_screen() {
     let ph = phone().await;
     let pc = Pc::start_boot(None, false, &ph).await;
     pc.boot().set_seat(Seat::Other);
-    assert!(connect(&ph, &pc.as_paired()).await.is_err());
+    assert_eq!(
+        refusal(&ph, &pc.as_paired()).await,
+        Some(dishus_core::Refusal::NotAtLoginScreen)
+    );
     pc.boot().set_seat(Seat::Greeter {
         display: ":0".into(),
     });
@@ -1158,26 +1173,121 @@ async fn login_mode_refuses_away_from_the_login_screen() {
         .expect("back at the login screen");
 }
 
+/// A login-mode session that types one key (after the picture), then hangs up.
+async fn typed_session(ph: &Client, pc: &Pc) -> anyhow::Result<()> {
+    let s = connect(ph, &pc.as_paired()).await?;
+    timeout(Duration::from_secs(5), s.next_video())
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("no picture"))?;
+    let before = pc.input.log().len();
+    for down in [true, false] {
+        s.send(ClientMsg::Key { code: 20, down })?;
+    }
+    wait_for(|| pc.input.log().len() >= before + 2).await;
+    drop(s);
+    wait_for(|| pc.state.sessions().is_empty()).await;
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn login_mode_limits_sessions_per_hour() {
+async fn login_mode_limits_typed_sessions_per_hour() {
     let ph = phone().await;
     let pc = Pc::start_boot(None, false, &ph).await;
-    for i in 0..dishus_daemon::boot::PER_HOUR {
+    // Sessions that type nothing (a link that drops before the password) cost nothing.
+    for _ in 0..dishus_daemon::boot::PER_HOUR + 2 {
         let s = connect(&ph, &pc.as_paired())
             .await
-            .unwrap_or_else(|e| panic!("session {i}: {e}"));
+            .expect("untyped sessions are free");
         drop(s);
         wait_for(|| pc.state.sessions().is_empty()).await;
     }
-    assert!(
-        connect(&ph, &pc.as_paired()).await.is_err(),
-        "one session too many in an hour"
-    );
+    for i in 0..dishus_daemon::boot::PER_HOUR {
+        typed_session(&ph, &pc)
+            .await
+            .unwrap_or_else(|e| panic!("session {i}: {e}"));
+    }
+    // The phone is told why and until when.
+    match refusal(&ph, &pc.as_paired()).await {
+        Some(dishus_core::Refusal::LoginLimit { retry_secs }) => {
+            assert!((3500..=3600).contains(&retry_secs), "{retry_secs}")
+        }
+        other => panic!("expected the hourly limit, got {other:?}"),
+    }
     // Allowing the phone again (sudo dishus boot allow) clears it.
     pc.state
         .allow_device(&ph.endpoint_id(), "phone", 30)
         .unwrap();
     connect(&ph, &pc.as_paired()).await.expect("allowed again");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn login_mode_blocks_after_five_typed_sessions_with_no_login() {
+    let ph = phone().await;
+    let rules = Rules {
+        per_hour: 100, // only the strikes matter here
+        ..Rules::default()
+    };
+    let pc = Pc::start_boot_with(None, false, &ph, rules).await;
+    for i in 0..dishus_daemon::boot::STRIKES_PER_DAY {
+        typed_session(&ph, &pc)
+            .await
+            .unwrap_or_else(|e| panic!("session {i}: {e}"));
+    }
+    assert_eq!(
+        refusal(&ph, &pc.as_paired()).await,
+        Some(dishus_core::Refusal::LoginBlocked)
+    );
+    pc.state
+        .allow_device(&ph.endpoint_id(), "phone", 30)
+        .unwrap();
+    typed_session(&ph, &pc).await.expect("allowed again");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn login_mode_a_login_clears_the_strike() {
+    let ph = phone().await;
+    let rules = Rules {
+        per_hour: 100,
+        ..Rules::default()
+    };
+    let pc = Pc::start_boot_with(None, false, &ph, rules).await;
+    for _ in 0..dishus_daemon::boot::STRIKES_PER_DAY + 1 {
+        typed_session(&ph, &pc).await.unwrap();
+        pc.boot().logged_in(); // the password worked
+    }
+    typed_session(&ph, &pc).await.expect("not blocked");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn login_mode_session_ends_at_the_cap() {
+    let ph = phone().await;
+    let rules = Rules {
+        session_max: Duration::from_secs(2),
+        ..Rules::default()
+    };
+    let pc = Pc::start_boot_with(None, false, &ph, rules).await;
+    let s = connect(&ph, &pc.as_paired()).await.unwrap();
+    let t0 = std::time::Instant::now();
+    let mut told = false;
+    let reason = loop {
+        match timeout(Duration::from_secs(5), s.next_control())
+            .await
+            .unwrap()
+        {
+            Some(ServerMsg::Notice { message, .. }) => told |= message.contains("at most"),
+            Some(ServerMsg::Bye { reason }) => break reason,
+            Some(_) => {}
+            None => panic!("closed without bye"),
+        }
+    };
+    assert_eq!(reason, ByeReason::Timeout);
+    assert!(told, "no notice about the cap");
+    let took = t0.elapsed();
+    assert!(
+        took >= Duration::from_millis(1500) && took < Duration::from_secs(4),
+        "{took:?}"
+    );
+    wait_for(|| pc.state.sessions().is_empty()).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1230,4 +1340,37 @@ async fn login_mode_phone_cannot_renew_itself() {
         before
     );
     assert!(pc.state.renew(&ph.endpoint_id(), 30).is_err());
+}
+
+/// `dishus boot allow`: the phone pairs a new identity in a login-enroll window. The session
+/// daemon only records it (for root to allow in login mode); it gets no access here.
+#[tokio::test(flavor = "multi_thread")]
+async fn login_enroll_records_the_identity_without_pairing_it() {
+    let pc = Pc::start().await;
+    let (tok, _) = pc.state.open_login_enroll().unwrap();
+    let mut link = pc.pairing_link();
+    pc.state.close_pairing(); // pairing_link() opened a normal window; use the enroll one
+    let (tok2, _) = pc.state.open_login_enroll().unwrap();
+    assert_ne!(*tok, *tok2);
+    link.token = *tok2;
+    let login_id = phone().await; // the phone's new, separate identity
+    login_id.pair(&link, "phone login").await.expect("enrolled");
+    assert_eq!(
+        pc.state.take_enrolled(),
+        Some((login_id.endpoint_id(), "phone login".to_string()))
+    );
+    assert!(pc.state.take_enrolled().is_none(), "taken once");
+    assert!(
+        pc.state.device(&login_id.endpoint_id()).is_none(),
+        "not paired with the session"
+    );
+    assert!(connect(&login_id, &pc.as_paired()).await.is_err());
+    assert!(pc.input.log().is_empty());
+    // single use, like pairing
+    let other = phone().await;
+    assert!(other.pair(&link, "x").await.is_err());
+    // and login mode itself never opens one
+    let ph = phone().await;
+    let boot = Pc::start_boot(None, false, &ph).await;
+    assert!(boot.state.open_login_enroll().is_err());
 }

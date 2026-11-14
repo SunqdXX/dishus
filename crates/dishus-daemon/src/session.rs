@@ -151,11 +151,22 @@ struct BootGuard {
     boot: Arc<crate::boot::BootState>,
     peer: iroh::EndpointId,
     name: String,
+    /// A key was typed: the session counts against the limits.
+    typed: bool,
+}
+
+impl BootGuard {
+    fn key_typed(&mut self) {
+        if !self.typed {
+            self.typed = true;
+            self.boot.typed(&self.peer, &self.name);
+        }
+    }
 }
 
 impl Drop for BootGuard {
     fn drop(&mut self) {
-        self.boot.ended(&self.peer, &self.name);
+        self.boot.ended(&self.peer, &self.name, self.typed);
     }
 }
 
@@ -211,7 +222,8 @@ fn path_summary(conn: &Connection) -> String {
 pub async fn handle(state: Arc<AppState>, conn: Connection) -> Result<()> {
     let peer = conn.remote_id();
     if !state.is_session_allowed(&peer) {
-        conn.close(state.refusal_code(&peer).into(), b"");
+        let (code, reason) = state.refusal(&peer);
+        conn.close(code.into(), &reason);
         bail!("peer no longer allowed");
     }
     let device = state.device(&peer).context("device vanished")?;
@@ -238,12 +250,13 @@ pub async fn handle(state: Arc<AppState>, conn: Connection) -> Result<()> {
         name: name.clone(),
     };
     state.touch(&peer);
-    let _boot_guard = state.boot.clone().map(|boot| {
-        boot.started(&peer, &name);
+    let mut boot_guard = state.boot.clone().map(|boot| {
+        boot.started(&name);
         BootGuard {
             boot,
             peer,
             name: name.clone(),
+            typed: false,
         }
     });
     state.notifier.notify(
@@ -330,9 +343,10 @@ pub async fn handle(state: Arc<AppState>, conn: Connection) -> Result<()> {
     });
     // Login mode: sessions are short, and input needs a fresh picture.
     let login_mode = state.boot.is_some();
+    let session_max = state.boot.as_ref().map(|b| b.rules.session_max);
     let session_end = tokio::time::Instant::now()
-        + if login_mode {
-            crate::boot::SESSION_MAX
+        + if let Some(max) = session_max {
+            max
         } else {
             Duration::from_secs(100 * 365 * 24 * 3600)
         };
@@ -400,6 +414,12 @@ pub async fn handle(state: Arc<AppState>, conn: Connection) -> Result<()> {
                         seen.age_text()
                     );
                 }
+                if input_ok
+                    && matches!(msg, ClientMsg::Key { down: true, .. })
+                    && let Some(g) = boot_guard.as_mut()
+                {
+                    g.key_typed();
+                }
                 match handle_msg(&state, &peer, v2, input_ok, msg, &out_tx, &vid_tx, &mut audio).await {
                     Ok(true) => {}
                     Ok(false) => break ByeReason::Normal,
@@ -411,10 +431,11 @@ pub async fn handle(state: Arc<AppState>, conn: Connection) -> Result<()> {
             }
             _ = tokio::time::sleep_until(last_rx + idle) => break ByeReason::Timeout,
             _ = tokio::time::sleep_until(session_end) => {
-                tracing::info!("{name}: login mode session reached its {} s limit", crate::boot::SESSION_MAX.as_secs());
+                let secs = session_max.unwrap_or_default().as_secs();
+                tracing::info!("{name}: login mode session reached its {secs} s limit");
                 let _ = out_tx.try_send(ServerMsg::Notice {
                     kind: NoticeKind::Info,
-                    message: "login mode sessions last at most 3 minutes".into(),
+                    message: format!("login mode sessions last at most {} min", secs.div_ceil(60)),
                 });
                 break ByeReason::Timeout;
             }

@@ -33,6 +33,11 @@ pub enum IpcRequest {
         name: String,
         days: u16,
     },
+    /// `dishus boot allow`: open a one-time window in which the phone pairs its separate
+    /// login-screen identity (answer: `Pairing`). That identity gets no access to the session.
+    LoginEnroll,
+    /// Take the identity enrolled in that window, if any (answer: `Enrolled`).
+    LoginEnrolled,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,9 +77,14 @@ pub struct IpcStatus {
 pub enum IpcResponse {
     Status(IpcStatus),
     Devices(Vec<IpcDevice>),
-    Pairing { uri: String, ttl_secs: u64 },
+    Pairing {
+        uri: String,
+        ttl_secs: u64,
+    },
     Ok(String),
     Error(String),
+    /// Hex id + name of the phone's login-screen identity; None while waiting.
+    Enrolled(Option<(String, String)>),
 }
 
 impl Validate for IpcRequest {

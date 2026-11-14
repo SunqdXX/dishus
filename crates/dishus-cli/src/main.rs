@@ -83,15 +83,26 @@ enum BootCmd {
     Status,
     /// Phones allowed at the login screen.
     List,
-    /// Allow a paired phone at the login screen (asks for sudo). Max 30 days; run again to renew.
+    /// Add your phone for the login screen: shows a code to scan in the app (Add login
+    /// screen), then asks for sudo. The phone gets its own identity, only for the login screen.
     Allow {
-        /// Name or id prefix of a phone paired with your session (`dishus list`).
+        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u16).range(1..=30))]
+        days: u16,
+    },
+    /// Extend a phone's login-screen allowance (asks for sudo); also clears its limits.
+    Renew {
         device: String,
         #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u16).range(1..=30))]
         days: u16,
-        /// Internal: the name to store (set when re-run under sudo).
-        #[arg(long, hide = true)]
-        name: Option<String>,
+    },
+    /// Internal, root only: allow this login-screen identity (what `allow` runs under sudo).
+    #[command(hide = true)]
+    AllowId {
+        id: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u16).range(1..=30))]
+        days: u16,
     },
     /// Remove a phone from login mode (also done by `dishus revoke`).
     Revoke { device: String },
@@ -104,6 +115,15 @@ enum BootCmd {
 /// The login-mode daemon's control socket (systemd RuntimeDirectory=dishus-boot).
 #[cfg(not(windows))]
 const BOOT_SOCKET: &str = "/run/dishus-boot/control.sock";
+
+/// [`BOOT_SOCKET`], or `$DISHUS_BOOT_SOCKET` (tests). sudo drops the variable, so the root
+/// step always uses the real one.
+#[cfg(not(windows))]
+fn boot_socket() -> PathBuf {
+    std::env::var_os("DISHUS_BOOT_SOCKET")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(BOOT_SOCKET))
+}
 /// Present when packaging/boot-mode/install.sh installed login mode.
 #[cfg(not(windows))]
 const BOOT_UNIT: &str = "/etc/systemd/system/dishus-boot.service";
@@ -250,7 +270,7 @@ async fn call(req: IpcRequest, wait: Duration) -> Result<IpcResponse> {
 /// Ask the login-mode daemon.
 #[cfg(not(windows))]
 async fn call_boot(req: IpcRequest, wait: Duration) -> Result<IpcResponse> {
-    let path = PathBuf::from(BOOT_SOCKET);
+    let path = boot_socket();
     let s = UnixStream::connect(&path).await.with_context(|| {
         format!(
             "login mode not running ({}). It is off unless installed and enabled: systemctl status dishus-boot",
@@ -619,10 +639,98 @@ fn running_as_root() -> bool {
     std::fs::metadata("/proc/self").is_ok_and(|m| m.uid() == 0)
 }
 
+/// Run the root step: `sudo <this dishus> boot allow-id ID --name NAME --days DAYS`.
+#[cfg(not(windows))]
+fn sudo_allow(id: &str, name: &str, days: u16) -> Result<()> {
+    let me = std::env::current_exe().context("finding the dishus binary")?;
+    let st = std::process::Command::new("sudo")
+        .arg(me)
+        .args(["boot", "allow-id", id, "--name", name])
+        .args(["--days", &days.to_string()])
+        .status()
+        .context("running sudo")?;
+    if !st.success() {
+        bail!("not allowed ({st})");
+    }
+    Ok(())
+}
+
+/// `dishus boot allow`: show a one-time code (this session's pairing window for the phone's
+/// new login-screen identity + where login mode is), wait for the phone, then allow that
+/// identity in login mode with sudo.
+#[cfg(not(windows))]
+async fn boot_allow(days: u16) -> Result<()> {
+    let short = Duration::from_secs(10);
+    let IpcResponse::Status(st) = call_boot(IpcRequest::Status, short).await? else {
+        bail!("unexpected reply from login mode");
+    };
+    let boot_id = hex32(&st.endpoint_id).context("login mode sent a bad PC id")?;
+    let boot_relays: Vec<String> = st
+        .relays
+        .into_iter()
+        .filter(|r| r.starts_with("https://") || r.starts_with("http://"))
+        .take(4)
+        .collect();
+    let boot_addrs: Vec<String> = st
+        .direct_addrs
+        .into_iter()
+        .filter(|a| {
+            a.parse::<std::net::SocketAddr>()
+                .is_ok_and(|a| !a.ip().is_loopback())
+        })
+        .take(6)
+        .collect();
+    let (uri, ttl) = match call(IpcRequest::LoginEnroll, short).await? {
+        IpcResponse::Pairing { uri, ttl_secs } => (uri, ttl_secs),
+        r => bail!("unexpected reply {r:?}"),
+    };
+    let pair = dishus_proto::PairingInfo::from_uri(&uri).context("bad pairing link")?;
+    let code = dishus_proto::LoginInfo {
+        pair,
+        boot_id,
+        boot_relays,
+        boot_addrs,
+    }
+    .to_uri();
+    println!(
+        "In the DiShus app: Add login screen, then scan this. Valid for {ttl} s, single use.\n"
+    );
+    print_qr(&code)?;
+    println!("Or paste this into the app (it is a secret, don't share it):\n{code}\n");
+    let deadline = std::time::Instant::now() + Duration::from_secs(ttl);
+    let (id, name) = loop {
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        if let IpcResponse::Enrolled(Some(e)) = call(IpcRequest::LoginEnrolled, short).await? {
+            break e;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = call(IpcRequest::ClosePairing, short).await;
+            bail!("the code expired; run `dishus boot allow` again");
+        }
+    };
+    println!(
+        "✓ \"{name}\" scanned it. Allowing it at the login screen for {days} days (needs sudo)."
+    );
+    sudo_allow(&id, &name, days)
+}
+
+/// 64 hex chars -> 32 bytes.
+#[cfg(not(windows))]
+fn hex32(s: &str) -> Option<[u8; 32]> {
+    if s.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (i, b) in out.iter_mut().enumerate() {
+        *b = u8::from_str_radix(s.get(2 * i..2 * i + 2)?, 16).ok()?;
+    }
+    Some(out)
+}
+
 /// After `dishus revoke` / `dishus kill`: do the same in login mode, if it runs.
 #[cfg(not(windows))]
 async fn also_boot(req: IpcRequest) {
-    if !std::path::Path::new(BOOT_SOCKET).exists() {
+    if !boot_socket().exists() {
         if std::path::Path::new(BOOT_UNIT).exists() {
             eprintln!(
                 "! login mode is installed but not running, so this did not reach it; its own list\n  \
@@ -674,22 +782,21 @@ async fn boot(cmd: BootCmd) -> Result<()> {
             IpcResponse::Devices(d) => print_devices(&d),
             r => bail!("unexpected reply {r:?}"),
         },
-        BootCmd::Allow { device, days, name } => {
-            if running_as_root() {
-                let name = name.context("run it without sudo: dishus boot allow <phone>")?;
-                return ok(call_boot(
-                    IpcRequest::Allow {
-                        id: device,
-                        name,
-                        days,
-                    },
-                    short,
-                )
-                .await?);
+        BootCmd::AllowId { id, name, days } => {
+            if !running_as_root() {
+                bail!("use `dishus boot allow` (it asks for sudo itself)");
             }
-            // Find the phone among the ones paired with this session, then ask for sudo.
-            let IpcResponse::Devices(d) = call(IpcRequest::List, short).await? else {
-                bail!("unexpected reply from the DiShus daemon");
+            return ok(call_boot(IpcRequest::Allow { id, name, days }, short).await?);
+        }
+        BootCmd::Allow { days } => {
+            if running_as_root() {
+                bail!("run it as yourself, without sudo: it asks for sudo when needed");
+            }
+            boot_allow(days).await?;
+        }
+        BootCmd::Renew { device, days } => {
+            let IpcResponse::Devices(d) = call_boot(IpcRequest::List, short).await? else {
+                bail!("unexpected reply from login mode");
             };
             let hits: Vec<&IpcDevice> = d
                 .iter()
@@ -697,26 +804,17 @@ async fn boot(cmd: BootCmd) -> Result<()> {
                 .collect();
             let phone = match hits.as_slice() {
                 [one] => *one,
-                [] => bail!("no paired phone matches \"{device}\" (see `dishus list`)"),
+                [] => bail!("no phone matches \"{device}\" (see `dishus boot list`)"),
                 _ => bail!(
                     "\"{device}\" matches {} phones; use more of the id",
                     hits.len()
                 ),
             };
             println!(
-                "Allowing \"{}\" at the login screen for {days} days (needs sudo).",
+                "Renewing \"{}\" at the login screen for {days} days (needs sudo).",
                 phone.name
             );
-            let me = std::env::current_exe().context("finding the dishus binary")?;
-            let st = std::process::Command::new("sudo")
-                .arg(me)
-                .args(["boot", "allow", &phone.id, "--name", &phone.name])
-                .args(["--days", &days.to_string()])
-                .status()
-                .context("running sudo")?;
-            if !st.success() {
-                bail!("not allowed ({st})");
-            }
+            sudo_allow(&phone.id, &phone.name, days)?;
         }
         BootCmd::Revoke { device } => {
             ok(call_boot(IpcRequest::Revoke { selector: device }, short).await?)?

@@ -48,17 +48,21 @@ impl From<vault::VaultError> for DishusError {
 }
 
 /// `ControlEvent::Closed` reason / `Rejected` message for a refusal; the app matches on these.
-fn refusal_reason(r: crate::Refusal) -> &'static str {
+/// `LoginLimit:<seconds until the next try>`.
+fn refusal_reason(r: crate::Refusal) -> String {
     match r {
-        crate::Refusal::Lockdown => "Lockdown",
-        crate::Refusal::Expired => "Expired",
+        crate::Refusal::Lockdown => "Lockdown".into(),
+        crate::Refusal::Expired => "Expired".into(),
+        crate::Refusal::LoginLimit { retry_secs } => format!("LoginLimit:{retry_secs}"),
+        crate::Refusal::LoginBlocked => "LoginBlocked".into(),
+        crate::Refusal::NotAtLoginScreen => "NotAtLoginScreen".into(),
     }
 }
 
 fn net_err(e: anyhow::Error) -> DishusError {
     if let Some(r) = crate::Refusal::find(&e) {
         return DishusError::Rejected {
-            msg: refusal_reason(r).into(),
+            msg: refusal_reason(r),
         };
     }
     DishusError::Network {
@@ -509,10 +513,9 @@ impl RemoteSession {
             None => ControlEvent::Closed {
                 reason: match self.session.refusal() {
                     Some(r) => refusal_reason(r),
-                    None if self.session.timed_out() => "PC not responding",
-                    None => "connection closed",
-                }
-                .into(),
+                    None if self.session.timed_out() => "PC not responding".into(),
+                    None => "connection closed".into(),
+                },
             },
             Some(ServerMsg::Welcome {
                 pc_name,

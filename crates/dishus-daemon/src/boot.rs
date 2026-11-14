@@ -10,7 +10,8 @@
 //!   within [`VIDEO_FRESH`], and a session whose capture fails is ended;
 //! * limits a phone can't dodge ([`Limits`]): sessions last at most [`SESSION_MAX`], at most
 //!   [`PER_HOUR`] per phone and hour, and after [`STRIKES_PER_DAY`] sessions in a day that no
-//!   login followed, the phone is blocked until allowed again.
+//!   login followed, the phone is blocked until allowed again. A session counts once a key was
+//!   typed: a connection that drops before that (a bad mobile link) costs nothing.
 
 use std::{
     collections::BTreeMap,
@@ -42,12 +43,51 @@ pub const VIDEO_FRESH: Duration = Duration::from_millis(1000);
 const HOUR: u64 = 3600;
 const DAY: u64 = 24 * HOUR;
 
+/// The limits ([`Default`]: the constants above; tests shorten them).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rules {
+    pub session_max: Duration,
+    pub per_hour: usize,
+    pub strikes_per_day: usize,
+}
+
+impl Default for Rules {
+    fn default() -> Self {
+        Self {
+            session_max: SESSION_MAX,
+            per_hour: PER_HOUR,
+            strikes_per_day: STRIKES_PER_DAY,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refused {
-    /// [`PER_HOUR`] sessions in the last hour.
-    Hourly,
+    /// [`PER_HOUR`] typed sessions in the last hour; the next one is possible in this many
+    /// seconds.
+    Hourly { retry_secs: u64 },
     /// Too many sessions without a login; allow the phone again from a session.
     Blocked,
+    /// seat0 isn't showing the login screen (someone is logged in, or it's starting).
+    NotAtLoginScreen,
+}
+
+impl Refused {
+    /// Close code + reason bytes for the phone (see [`dishus_proto::close_code`]).
+    pub fn close(&self) -> (u32, Vec<u8>) {
+        use dishus_proto::close_code as c;
+        match self {
+            Refused::Hourly { retry_secs } => (
+                c::LOGIN_LIMIT,
+                u32::try_from(*retry_secs)
+                    .unwrap_or(u32::MAX)
+                    .to_be_bytes()
+                    .to_vec(),
+            ),
+            Refused::Blocked => (c::LOGIN_BLOCKED, Vec::new()),
+            Refused::NotAtLoginScreen => (c::NOT_AT_LOGIN_SCREEN, Vec::new()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,13 +126,17 @@ impl Limits {
     }
 
     /// May this phone start a session now?
-    pub fn check(&mut self, id: &str, now: u64) -> Result<(), Refused> {
+    pub fn check(&mut self, id: &str, now: u64, r: &Rules) -> Result<(), Refused> {
         let p = self.phones.entry(id.to_owned()).or_default();
         Self::prune(p, now);
         if p.blocked {
             Err(Refused::Blocked)
-        } else if p.starts.len() >= PER_HOUR {
-            Err(Refused::Hourly)
+        } else if p.starts.len() >= r.per_hour {
+            // free again an hour after the oldest of the last `per_hour` sessions
+            let oldest = p.starts[p.starts.len() - r.per_hour];
+            Err(Refused::Hourly {
+                retry_secs: (oldest + HOUR).saturating_sub(now).max(1),
+            })
         } else {
             Ok(())
         }
@@ -106,12 +150,12 @@ impl Limits {
             .push(now);
     }
 
-    /// A session ended; it counts against the phone unless a login follows soon.
-    pub fn ended(&mut self, id: &str, now: u64) {
+    /// A session that typed ended; it counts against the phone unless a login follows soon.
+    pub fn ended(&mut self, id: &str, now: u64, r: &Rules) {
         let p = self.phones.entry(id.to_owned()).or_default();
         Self::prune(p, now);
         p.strikes.push(now);
-        if p.strikes.len() >= STRIKES_PER_DAY {
+        if p.strikes.len() >= r.strikes_per_day {
             p.blocked = true;
         }
     }
@@ -163,6 +207,7 @@ fn valid_display(d: &str) -> bool {
 
 /// Login-mode state shared by the gate, the sessions and the seat watcher.
 pub struct BootState {
+    pub rules: Rules,
     seat: Mutex<Seat>,
     limits: Mutex<Limits>,
     limits_file: PathBuf,
@@ -180,12 +225,18 @@ impl BootState {
         history_file: Option<PathBuf>,
     ) -> Result<Self> {
         Ok(Self {
+            rules: Rules::default(),
             seat: Mutex::new(Seat::Other),
             limits: Mutex::new(Limits::load(&limits_file)?),
             limits_file,
             owner_uid,
             history_file,
         })
+    }
+
+    pub fn with_rules(mut self, r: Rules) -> Self {
+        self.rules = r;
+        self
     }
 
     pub fn seat(&self) -> Seat {
@@ -219,19 +270,21 @@ impl BootState {
         r
     }
 
-    /// May this (allowed) phone start a session now? Logs why not.
-    pub fn may_start(&self, id: &EndpointId) -> bool {
+    /// Why this (allowed) phone may not start a session now, if it may not.
+    pub fn refusal(&self, id: &EndpointId) -> Option<Refused> {
         if self.greeter_display().is_none() {
-            tracing::info!(
-                "login mode: refused {}: not at the login screen",
-                id.fmt_short()
-            );
-            return false;
+            return Some(Refused::NotAtLoginScreen);
         }
         let now = now_unix();
-        match self.with_limits(|l| l.check(&id.to_string(), now)) {
-            Ok(()) => true,
-            Err(r) => {
+        self.with_limits(|l| l.check(&id.to_string(), now, &self.rules))
+            .err()
+    }
+
+    /// May this (allowed) phone start a session now? Logs why not.
+    pub fn may_start(&self, id: &EndpointId) -> bool {
+        match self.refusal(id) {
+            None => true,
+            Some(r) => {
                 tracing::warn!("login mode: refused {}: {r:?}", id.fmt_short());
                 false
             }
@@ -248,19 +301,29 @@ impl BootState {
                 .is_blocked(&id.to_string())
     }
 
-    pub fn started(&self, id: &EndpointId, name: &str) {
-        let now = now_unix();
-        self.with_limits(|l| l.started(&id.to_string(), now));
-        self.record(&format!("{now} start {name}"));
+    pub fn started(&self, name: &str) {
+        self.record(&format!("{} start {name}", now_unix()));
     }
 
-    pub fn ended(&self, id: &EndpointId, name: &str) {
+    /// The session typed its first key: from now on it counts against the limits.
+    pub fn typed(&self, id: &EndpointId, name: &str) {
         let now = now_unix();
+        self.with_limits(|l| l.started(&id.to_string(), now));
+        self.record(&format!("{now} typed {name}"));
+    }
+
+    /// `typed`: whether [`Self::typed`] was called for this session.
+    pub fn ended(&self, id: &EndpointId, name: &str, typed: bool) {
+        let now = now_unix();
+        self.record(&format!("{now} end {name}"));
+        if !typed {
+            return;
+        }
+        let rules = self.rules;
         let blocked = self.with_limits(|l| {
-            l.ended(&id.to_string(), now);
+            l.ended(&id.to_string(), now, &rules);
             l.is_blocked(&id.to_string())
         });
-        self.record(&format!("{now} end {name}"));
         if blocked {
             tracing::warn!(
                 "login mode: {name} is blocked (too many sessions with no login); allow it again from a session"
@@ -449,19 +512,30 @@ mod tests {
 
     const A: &str = "aaaa";
     const B: &str = "bbbb";
+    const R: Rules = Rules {
+        session_max: SESSION_MAX,
+        per_hour: PER_HOUR,
+        strikes_per_day: STRIKES_PER_DAY,
+    };
 
     #[test]
     fn three_sessions_an_hour() {
         let mut l = Limits::default();
         let t = 1_000_000;
         for i in 0..PER_HOUR as u64 {
-            assert_eq!(l.check(A, t + i * 60), Ok(()));
+            assert_eq!(l.check(A, t + i * 60, &R), Ok(()));
             l.started(A, t + i * 60);
         }
-        assert_eq!(l.check(A, t + 300), Err(Refused::Hourly));
-        assert_eq!(l.check(B, t + 300), Ok(()), "per phone");
+        // free again an hour after the first one: 3600 - 300 s from now
         assert_eq!(
-            l.check(A, t + HOUR + 1),
+            l.check(A, t + 300, &R),
+            Err(Refused::Hourly {
+                retry_secs: HOUR - 300
+            })
+        );
+        assert_eq!(l.check(B, t + 300, &R), Ok(()), "per phone");
+        assert_eq!(
+            l.check(A, t + HOUR + 1, &R),
             Ok(()),
             "an hour after the first one"
         );
@@ -473,17 +547,17 @@ mod tests {
         let mut t = 1_000_000;
         for _ in 0..STRIKES_PER_DAY - 1 {
             l.started(A, t);
-            l.ended(A, t + 60);
+            l.ended(A, t + 60, &R);
             t += HOUR; // stay under the hourly limit
-            assert_eq!(l.check(A, t), Ok(()));
+            assert_eq!(l.check(A, t, &R), Ok(()));
         }
         l.started(A, t);
-        l.ended(A, t + 60);
-        assert_eq!(l.check(A, t + HOUR), Err(Refused::Blocked));
+        l.ended(A, t + 60, &R);
+        assert_eq!(l.check(A, t + HOUR, &R), Err(Refused::Blocked));
         // stays blocked, even a day later, until allowed again
-        assert_eq!(l.check(A, t + 3 * DAY), Err(Refused::Blocked));
+        assert_eq!(l.check(A, t + 3 * DAY, &R), Err(Refused::Blocked));
         l.reset(A);
-        assert_eq!(l.check(A, t + 3 * DAY), Ok(()));
+        assert_eq!(l.check(A, t + 3 * DAY, &R), Ok(()));
     }
 
     #[test]
@@ -492,15 +566,15 @@ mod tests {
         let mut t = 1_000_000;
         for _ in 0..STRIKES_PER_DAY + 2 {
             l.started(A, t);
-            l.ended(A, t + 60);
+            l.ended(A, t + 60, &R);
             l.logged_in(t + 90); // the password worked
             t += HOUR;
         }
-        assert_eq!(l.check(A, t), Ok(()));
+        assert_eq!(l.check(A, t, &R), Ok(()));
         // a login long after doesn't wipe older failures
         let mut l = Limits::default();
         l.started(A, t);
-        l.ended(A, t + 60);
+        l.ended(A, t + 60, &R);
         l.logged_in(t + 60 + LOGIN_GRACE_SECS + 1);
         assert!(!l.phones[A].strikes.is_empty());
     }
@@ -510,10 +584,10 @@ mod tests {
         let mut l = Limits::default();
         let t = 1_000_000;
         for i in 0..STRIKES_PER_DAY as u64 - 1 {
-            l.ended(A, t + i);
+            l.ended(A, t + i, &R);
         }
-        l.ended(A, t + DAY + 10); // the old ones are gone by now
-        assert_eq!(l.check(A, t + DAY + 20), Ok(()));
+        l.ended(A, t + DAY + 10, &R); // the old ones are gone by now
+        assert_eq!(l.check(A, t + DAY + 20, &R), Ok(()));
     }
 
     #[test]
@@ -522,12 +596,12 @@ mod tests {
         let f = d.path().join("limits.toml");
         let mut l = Limits::default();
         for i in 0..STRIKES_PER_DAY as u64 {
-            l.ended(A, 1_000_000 + i);
+            l.ended(A, 1_000_000 + i, &R);
         }
         l.save(&f).unwrap();
         let mut back = Limits::load(&f).unwrap();
         assert_eq!(back, l);
-        assert_eq!(back.check(A, 1_000_100), Err(Refused::Blocked));
+        assert_eq!(back.check(A, 1_000_100, &R), Err(Refused::Blocked));
         assert_eq!(
             Limits::load(&d.path().join("none")).unwrap(),
             Limits::default()
