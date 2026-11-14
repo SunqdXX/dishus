@@ -136,8 +136,7 @@ Not pushed, not released.
 Goal: after boot, at the login screen, type the password from an already paired phone.
 
 Facts on the owner's PC (read only): SDDM 0.21 with an X11 greeter (no `DisplayServer`
-set, X11 is the default); no LUKS; network is one system-wide Ethernet profile (no user
-permissions), up before login; no Wi-Fi hardware; `/dev/uinput` is `root:input 0660` plus a
+set, X11 is the default); the network is up before login; `/dev/uinput` is `root:input 0660` plus a
 logind ACL for whoever has the active session (at the greeter that is the sddm user, not
 the owner); the screen lock is caelestia's own (ext-session-lock, PAM `passwd` with
 pam_faillock); SDDM's PAM also uses pam_faillock (defaults: 3 failures, 10 minutes locked).
@@ -154,8 +153,8 @@ pam_faillock); SDDM's PAM also uses pam_faillock (defaults: 3 failures, 10 minut
 3. Video: the greeter is an X11 server. SDDM runs `Xsetup` as root when it starts; one line
    (`xhost +SI:localuser:dishus-boot`) lets only that user read the greeter's screen, with
    GStreamer's `ximagesrc` (already a dependency). NVENC if the NVIDIA nodes are usable by
-   the user, else x264. Typing blind is the fallback, but it is risky: a password typed into
-   the user name field ends up in the journal as a user name.
+   the user, else x264. No picture, no login mode (owner's rule): a password is never typed
+   unseen. A password typed into the user name field would end up in the journal.
 4. Root is needed only to install: the unit, the user, the uinput rule, the Xsetup line.
    At run time nothing runs as root. Sandbox: ProtectSystem=strict, ProtectHome=yes,
    NoNewPrivileges, empty CapabilityBoundingSet, DevicePolicy=closed with DeviceAllow for
@@ -181,8 +180,8 @@ pam_faillock); SDDM's PAM also uses pam_faillock (defaults: 3 failures, 10 minut
    `boot.direct_only`.
 8. Off by default: nothing is installed until `sudo dishus boot enable`; `sudo dishus boot
    disable` removes all of it.
-9. Not possible: the LUKS prompt (it runs before the system and its network start), the UEFI
-   boot menu.
+9. Not possible: a disk-encryption (LUKS) prompt (it runs before the system and its network
+   start), the UEFI boot menu.
 
 Lock screen while logged in (the normal daemon, today): input should already work (the
 virtual keyboard is a normal keyboard to Hyprland, and the logind ACL stays with the owner
