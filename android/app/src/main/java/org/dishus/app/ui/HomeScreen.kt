@@ -42,6 +42,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.fragment.app.FragmentActivity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.journeyapps.barcodescanner.ScanContract
@@ -49,7 +54,9 @@ import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.dishus.app.DishusApp
+import uniffi.dishus_core.LoginScreenInfo
 import uniffi.dishus_core.PcInfo
+import uniffi.dishus_core.isLoginCode
 import uniffi.dishus_core.RelaySettings
 
 fun expiryText(expiresAt: Long): String {
@@ -62,8 +69,14 @@ fun expiryText(expiresAt: Long): String {
 }
 
 @Composable
-fun HomeScreen(app: DishusApp, onConnect: (String) -> Unit) {
+fun HomeScreen(app: DishusApp, onConnect: (String) -> Unit, onConnectLogin: (String) -> Unit) {
     var pcs by remember { mutableStateOf(runCatching { app.core.pairedPcs() }.getOrDefault(emptyList())) }
+    var logins by remember { mutableStateOf(runCatching { app.core.loginScreens() }.getOrDefault(emptyList())) }
+    var pairInfo by remember { mutableStateOf<String?>(null) }
+    var forgetLogin by remember { mutableStateOf<LoginScreenInfo?>(null) }
+    // The login screen asking for the app password (no biometrics, or they were declined).
+    var passwordFor by remember { mutableStateOf<LoginScreenInfo?>(null) }
+    val activity = LocalContext.current as FragmentActivity
     var pairing by remember { mutableStateOf(false) }
     var pairError by remember { mutableStateOf<String?>(null) }
     var pasteOpen by remember { mutableStateOf(false) }
@@ -85,10 +98,28 @@ fun HomeScreen(app: DishusApp, onConnect: (String) -> Unit) {
     // Leaving the screen (connect, lock) carries out a pending forget rather than dropping it.
     DisposableEffect(Unit) { onDispose { commitForget() } }
 
+    // The app lock, every time, before a login-screen connection.
+    fun unlockLogin(l: LoginScreenInfo) {
+        pairError = null
+        val cipher = if (app.vault.biometricEnabled()) app.vault.biometricDecryptCipher() else null
+        if (cipher == null) { passwordFor = l; return }
+        prompt(activity, cipher, "Unlock to use ${l.name}'s login screen", onError = { passwordFor = l }) { c ->
+            val ok = runCatching { app.core.verifyPassword(app.vault.biometricLoad(c)) }.getOrDefault(false)
+            if (ok) onConnectLogin(l.id) else passwordFor = l
+        }
+    }
+
     fun pair(link: String) {
-        pairing = true; pairError = null
+        pairing = true; pairError = null; pairInfo = null
         scope.launch {
             try {
+                if (isLoginCode(link)) {
+                    val l = app.core.addLoginScreen(link.trim(), "${Build.MODEL ?: "Android"} login".take(64))
+                    app.persistVault()
+                    logins = app.core.loginScreens()
+                    pairInfo = "Added ${l.name}'s login screen. Finish on the PC: it asks for your sudo password."
+                    return@launch
+                }
                 val pc = app.core.pair(link.trim(), (Build.MODEL ?: "Android").take(64))
                 app.persistVault()
                 pcs = app.core.pairedPcs()
@@ -111,7 +142,7 @@ fun HomeScreen(app: DishusApp, onConnect: (String) -> Unit) {
         }
         Spacer(Modifier.height(12.dp))
         val shown = pcs.filter { it.id != pendingForget?.id }
-        if (shown.isEmpty()) {
+        if (shown.isEmpty() && logins.isEmpty()) {
             Text(
                 "No PC paired yet. On the PC run `dishus pair`, then scan the QR code it shows.",
                 style = MaterialTheme.typography.bodyMedium,
@@ -139,6 +170,28 @@ fun HomeScreen(app: DishusApp, onConnect: (String) -> Unit) {
                 }
             }
         }
+        if (logins.isNotEmpty()) {
+            Text("Login screens", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(vertical = 8.dp))
+            for (l in logins) {
+                Card(Modifier.fillMaxWidth().padding(bottom = 10.dp)) {
+                    Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(l.name, style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                "login screen · ${l.id.take(12)}",
+                                style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace,
+                            )
+                        }
+                        Button(onClick = { unlockLogin(l) }) { Text("Connect") }
+                        var menu by remember { mutableStateOf(false) }
+                        TextButton(onClick = { menu = true }) { Text("⋮") }
+                        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                            DropdownMenuItem(text = { Text("Forget this login screen…") }, onClick = { menu = false; forgetLogin = l })
+                        }
+                    }
+                }
+            }
+        }
         pendingForget?.let { pc ->
             Card(Modifier.fillMaxWidth()) {
                 Row(Modifier.padding(start = 16.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -149,12 +202,13 @@ fun HomeScreen(app: DishusApp, onConnect: (String) -> Unit) {
             Spacer(Modifier.height(8.dp))
         }
         pairError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        pairInfo?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Button(enabled = !pairing, modifier = Modifier.weight(1f), onClick = {
                 scanner.launch(
                     ScanOptions().setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-                        .setPrompt("Scan the QR code from `dishus pair`").setBeepEnabled(false).setOrientationLocked(false),
+                        .setPrompt("Scan the QR code from `dishus pair` or `dishus boot allow`").setBeepEnabled(false).setOrientationLocked(false),
                 )
             }) { Text(if (pairing) "Pairing…" else "Scan QR") }
             OutlinedButton(enabled = !pairing, modifier = Modifier.weight(1f), onClick = { pasteOpen = true }) {
@@ -167,7 +221,7 @@ fun HomeScreen(app: DishusApp, onConnect: (String) -> Unit) {
         var link by remember { mutableStateOf("") }
         AlertDialog(
             onDismissRequest = { pasteOpen = false },
-            title = { Text("Pairing link") },
+            title = { Text("Pairing or login code") },
             text = { OutlinedTextField(link, { link = it }, placeholder = { Text("dishus://pair?…") }) },
             confirmButton = { TextButton(onClick = { pasteOpen = false; pair(link) }) { Text("Pair") } },
             dismissButton = { TextButton(onClick = { pasteOpen = false }) { Text("Cancel") } },
@@ -186,6 +240,48 @@ fun HomeScreen(app: DishusApp, onConnect: (String) -> Unit) {
                 }) { Text("Forget") }
             },
             dismissButton = { TextButton(onClick = { forget = null }) { Text("Cancel") } },
+        )
+    }
+    forgetLogin?.let { l ->
+        AlertDialog(
+            onDismissRequest = { forgetLogin = null },
+            title = { Text("Forget ${l.name}'s login screen?") },
+            text = { Text("This phone forgets it. To also remove it on the PC run `dishus boot revoke`.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    runCatching { app.core.forgetLoginScreen(l.id); app.persistVault() }
+                    logins = runCatching { app.core.loginScreens() }.getOrDefault(emptyList())
+                    forgetLogin = null
+                }) { Text("Forget") }
+            },
+            dismissButton = { TextButton(onClick = { forgetLogin = null }) { Text("Cancel") } },
+        )
+    }
+    passwordFor?.let { l ->
+        var pw by remember { mutableStateOf("") }
+        var wrong by remember { mutableStateOf(false) }
+        AlertDialog(
+            onDismissRequest = { passwordFor = null },
+            title = { Text("App password") },
+            text = {
+                Column {
+                    Text("Needed every time before using ${l.name}'s login screen.")
+                    OutlinedTextField(
+                        pw, { pw = it; wrong = false }, label = { Text("Password") }, singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
+                    )
+                    if (wrong) Text("Wrong password", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (runCatching { app.core.verifyPassword(pw) }.getOrDefault(false)) {
+                        pw = ""; passwordFor = null; onConnectLogin(l.id)
+                    } else wrong = true
+                }) { Text("Unlock") }
+            },
+            dismissButton = { TextButton(onClick = { passwordFor = null }) { Text("Cancel") } },
         )
     }
     if (settingsOpen) AppSettingsDialog(app) { settingsOpen = false }

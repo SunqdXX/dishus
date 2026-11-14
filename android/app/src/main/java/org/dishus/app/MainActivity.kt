@@ -54,9 +54,12 @@ private fun Root(app: DishusApp, activity: FragmentActivity) {
     }
     var remotePc by rememberSaveable { mutableStateOf<String?>(null) }
     var autoConnectDone by remember { mutableStateOf(false) }
+    // Not saveable on purpose: a recreated activity goes back home, so the app lock is asked again.
+    var loginPc by remember { mutableStateOf<String?>(null) }
 
     if (locked) {
         remotePc = null
+        loginPc = null
         LockScreen(app, activity)
         return
     }
@@ -70,8 +73,15 @@ private fun Root(app: DishusApp, activity: FragmentActivity) {
         }
     }
     val pc = remotePc
-    if (pc == null) {
-        HomeScreen(app, onConnect = { id -> app.prefs.lastPcId = id; remotePc = id })
+    val login = loginPc
+    if (login != null) {
+        RemoteScreen(app, login, login = true, onExit = { loginPc = null })
+    } else if (pc == null) {
+        HomeScreen(
+            app,
+            onConnect = { id -> app.prefs.lastPcId = id; remotePc = id },
+            onConnectLogin = { id -> loginPc = id },
+        )
     } else {
         RemoteScreen(app, pc, onExit = { remotePc = null })
     }

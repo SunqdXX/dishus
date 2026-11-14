@@ -35,6 +35,33 @@ enum class ModState { OFF, STICKY, LOCKED }
 private const val EXPIRED_MSG = "The pairing with this PC has expired. Run `dishus renew` on the PC, or pair again."
 private const val LOCKDOWN_MSG = "The PC is locked down (dishus kill). Waiting for `dishus unlock` on the PC…"
 
+/** Why login mode refused or ended, in words, with "until when" where there is one. */
+fun loginRefusalText(reason: String?, error: String? = null): String {
+    if (reason != null && reason.startsWith("LoginLimit:")) {
+        val secs = reason.removePrefix("LoginLimit:").toLongOrNull() ?: 3600
+        val at = java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT)
+            .format(java.util.Date(System.currentTimeMillis() + secs * 1000))
+        return "Login mode limit reached (3 tries an hour). Try again in ${(secs + 59) / 60} min (at $at)."
+    }
+    return when (reason) {
+        "LoginBlocked" -> "Login mode is blocked: 5 tries in a row ended with no login. " +
+            "From a session on the PC, run `dishus boot allow` again."
+        "NotAtLoginScreen" -> "The PC isn't showing the login screen (someone is logged in, or it's still " +
+            "starting). Once logged in, use the normal entry for this PC."
+        "Expired" -> "This phone's login-screen access has expired. From a session on the PC, run " +
+            "`dishus boot renew` or `dishus boot allow`."
+        "Lockdown", "Killed" -> "Login mode is locked down (dishus boot kill). Run `dishus boot unlock` on the PC."
+        "Revoked" -> "This phone is no longer allowed at the login screen."
+        "Timeout" -> "Login mode sessions last at most 3 min. Connect again (the app lock asks again)."
+        "Normal" -> "The login screen session ended (logged in, or the PC closed it). " +
+            "Once logged in, use the normal entry for this PC."
+        "PC not responding" -> "Lost the connection. Connect again (the app lock asks again)."
+        null -> "Login mode isn't answering: it's off, the PC is off or asleep, or this phone isn't " +
+            "allowed (check `dishus boot list` on the PC)." + (error?.let { "\n\n($it)" } ?: "")
+        else -> "The login screen session ended or was refused ($reason)."
+    }
+}
+
 data class RemoteUi(
     val status: String = "Connecting…",
     val connected: Boolean = false,
@@ -60,7 +87,12 @@ data class RemoteUi(
  * Owns one remote session: connect with backoff, pump video into the decoder, surface control
  * events as [ui], and translate keyboard/touch actions into protocol messages.
  */
-class RemoteController(private val app: DishusApp, private val pcId: String) {
+class RemoteController(
+    private val app: DishusApp,
+    private val pcId: String,
+    /** A login-screen entry: its own identity, and no reconnect without the app lock again. */
+    private val login: Boolean = false,
+) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val decodeDispatcher = Executors.newSingleThreadExecutor { r -> Thread(r, "dishus-decode") }.asCoroutineDispatcher()
     private val audioDispatcher = Executors.newSingleThreadExecutor { r -> Thread(r, "dishus-audio") }.asCoroutineDispatcher()
@@ -118,11 +150,17 @@ class RemoteController(private val app: DishusApp, private val pcId: String) {
         while (currentCoroutineContext().isActive) {
             _ui.value = _ui.value.copy(status = "Connecting…", connected = false)
             val s = try {
-                app.core.connect(pcId, deviceName, app.prefs.toSend(app.prefs.stream))
+                val settings = app.prefs.toSend(app.prefs.stream)
+                if (login) app.core.connectLoginScreen(pcId, deviceName, settings)
+                else app.core.connect(pcId, deviceName, settings)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 val refusal = (e as? DishusException.Rejected)?.message
+                if (login) {
+                    _ui.value = _ui.value.copy(fatal = true, status = loginRefusalText(refusal, e.message?.take(120)))
+                    return
+                }
                 val pc = runCatching { app.core.pairedPcs().firstOrNull { it.id == pcId } }.getOrNull()
                 if (refusal == "Expired" || (pc != null && pc.expiresAt.toLong() <= System.currentTimeMillis() / 1000)) {
                     // Retrying can never succeed.
@@ -170,6 +208,10 @@ class RemoteController(private val app: DishusApp, private val pcId: String) {
                 }
                 mods.clear(); publishMods()
             }
+            if (login) {
+                _ui.value = _ui.value.copy(connected = false, fatal = true, status = loginRefusalText(reason))
+                return
+            }
             val fatal = reason in setOf("Revoked", "Killed", "Expired")
             _ui.value = _ui.value.copy(
                 connected = false,
@@ -209,7 +251,7 @@ class RemoteController(private val app: DishusApp, private val pcId: String) {
                 }
                 is ControlEvent.Renewed -> {
                     _ui.value = _ui.value.copy(expiresAt = ev.expiresAt.toLong(), notice = "Pairing renewed")
-                    runCatching { app.core.recordRenewal(pcId, ev.expiresAt); app.persistVault() }
+                    if (!login) runCatching { app.core.recordRenewal(pcId, ev.expiresAt); app.persistVault() }
                 }
                 is ControlEvent.Notice -> _ui.value = _ui.value.copy(notice = ev.message)
                 is ControlEvent.AudioStarted -> Log.i("DishusAudio", "PC audio started: ${ev.sampleRate} Hz, ${ev.channels} ch")

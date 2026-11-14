@@ -140,13 +140,22 @@ fun LockScreen(app: DishusApp, activity: FragmentActivity) {
     }
 }
 
-private fun prompt(activity: FragmentActivity, cipher: Cipher, title: String, onOk: (Cipher) -> Unit) {
+internal fun prompt(
+    activity: FragmentActivity,
+    cipher: Cipher,
+    title: String,
+    onError: () -> Unit = {},
+    onOk: (Cipher) -> Unit,
+) {
     val p = BiometricPrompt(
         activity, ContextCompat.getMainExecutor(activity),
         object : BiometricPrompt.AuthenticationCallback() {
             override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
                 result.cryptoObject?.cipher?.let(onOk)
             }
+
+            // Cancelled, "Use password", or too many tries.
+            override fun onAuthenticationError(errorCode: Int, errString: CharSequence) = onError()
         },
     )
     val info = BiometricPrompt.PromptInfo.Builder()

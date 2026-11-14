@@ -45,15 +45,18 @@ import uniffi.dishus_core.StreamQuality
 import uniffi.dishus_core.StreamSettings
 
 @Composable
-fun RemoteScreen(app: DishusApp, pcId: String, onExit: () -> Unit) {
-    val controller = remember(pcId) { RemoteController(app, pcId) }
+fun RemoteScreen(app: DishusApp, pcId: String, login: Boolean = false, onExit: () -> Unit) {
+    val controller = remember(pcId, login) { RemoteController(app, pcId, login) }
     val ui by controller.ui.collectAsState()
     val bg by app.backgrounded.collectAsState()
     var sheet by remember { mutableStateOf(false) }
 
     // Never keep controlling the PC from a pocket: drop the session when backgrounded, release
     // everything, and reconnect (fast) when the app comes back.
-    LaunchedEffect(bg) { if (bg) controller.stop() else controller.start() }
+    // A login-screen session doesn't come back on its own: the app lock is asked again.
+    LaunchedEffect(bg) {
+        if (bg) { controller.stop(); if (login) onExit() } else controller.start()
+    }
     DisposableEffect(controller) { onDispose { controller.shutdown() } }
     BackHandler { controller.releaseAll(); onExit() }
 
@@ -102,7 +105,7 @@ fun RemoteScreen(app: DishusApp, pcId: String, onExit: () -> Unit) {
     if (ui.fatal) {
         AlertDialog(
             onDismissRequest = onExit,
-            title = { Text("Session ended") },
+            title = { Text(if (login) "Login screen" else "Session ended") },
             text = { Text(ui.status) },
             confirmButton = { TextButton(onClick = onExit) { Text("Back") } },
         )
