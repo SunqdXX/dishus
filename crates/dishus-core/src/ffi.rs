@@ -9,11 +9,13 @@ use std::sync::{Arc, Mutex};
 use tokio::runtime::Runtime;
 use zeroize::Zeroize;
 
-use dishus_proto::{ClientMsg, MouseButton, PairingInfo, Quality, ServerMsg, StreamParams};
+use dishus_proto::{
+    ClientMsg, LoginInfo, MouseButton, PairingInfo, Quality, ServerMsg, StreamParams,
+};
 
 use crate::{
     client::{Client, NetConfig, Session},
-    vault::{self, KdfParams, PairedPc, VaultData},
+    vault::{self, KdfParams, LoginScreen, PairedPc, VaultData},
 };
 
 /// `flat_error`: Kotlin sees each variant with `message` = the Display text below. (Non-flat
@@ -91,6 +93,30 @@ impl From<&PairedPc> for PcInfo {
 
 fn data_encoding_hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// A PC's login screen (`dishus boot allow`).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct LoginScreenInfo {
+    /// Hex EndpointId of the PC's login mode.
+    pub id: String,
+    /// The PC's name.
+    pub name: String,
+}
+
+impl From<&LoginScreen> for LoginScreenInfo {
+    fn from(l: &LoginScreen) -> Self {
+        LoginScreenInfo {
+            id: data_encoding_hex(&l.endpoint_id),
+            name: l.name.clone(),
+        }
+    }
+}
+
+/// Is this a `dishus://login?` code (from `dishus boot allow`) rather than a pairing link?
+#[uniffi::export]
+pub fn is_login_code(text: String) -> bool {
+    text.trim().starts_with("dishus://login?")
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -410,6 +436,125 @@ impl Core {
         Ok(Arc::new(RemoteSession {
             session: Arc::new(session),
             handle: self.rt.handle().clone(),
+            own_client: None,
+        }))
+    }
+
+    /// Check the app password (the app lock before each login-screen connection).
+    pub fn verify_password(&self, password: String) -> Result<bool, DishusError> {
+        self.with_vault(|u| {
+            let a = u.password.as_bytes();
+            let b = password.as_bytes();
+            Ok(a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0)
+        })
+    }
+
+    /// Redeem a `dishus://login?...` code from `dishus boot allow`: make a new identity just
+    /// for this PC's login screen and register it in the PC's one-time window. The PC then
+    /// asks for sudo and allows it. Call `export_vault` afterwards.
+    pub async fn add_login_screen(
+        &self,
+        code: String,
+        device_name: String,
+    ) -> Result<LoginScreenInfo, DishusError> {
+        let info = LoginInfo::from_uri(&code)
+            .map_err(|e| DishusError::InvalidInput { msg: e.to_string() })?;
+        self.with_vault(|_| Ok(()))?; // must be unlocked
+        let id = vault::new_identity()?;
+        let key = zeroize::Zeroizing::new(id.secret_key);
+        let net = self.net.lock().expect("net lock").clone();
+        let pair = info.pair.clone();
+        let k2 = key.clone();
+        self.rt
+            .spawn(async move {
+                let c = Client::new(&k2, &net).await?;
+                let r = c.pair(&pair, &device_name).await;
+                c.close().await;
+                r
+            })
+            .await
+            .map_err(|e| DishusError::Internal { msg: e.to_string() })?
+            .map_err(|e| DishusError::Rejected {
+                msg: format!("{e:#}"),
+            })?;
+        let entry = LoginScreen {
+            secret_key: *key,
+            endpoint_id: info.boot_id,
+            name: info.pair.pc_name.clone(),
+            relays: info.boot_relays.clone(),
+            addrs: info.boot_addrs.clone(),
+        };
+        let out = LoginScreenInfo::from(&entry);
+        self.with_vault(|u| {
+            u.data.login.retain(|l| l.endpoint_id != entry.endpoint_id);
+            u.data.login.push(entry);
+            Ok(())
+        })?;
+        Ok(out)
+    }
+
+    pub fn login_screens(&self) -> Result<Vec<LoginScreenInfo>, DishusError> {
+        self.with_vault(|u| Ok(u.data.login.iter().map(LoginScreenInfo::from).collect()))
+    }
+
+    pub fn forget_login_screen(&self, id: String) -> Result<(), DishusError> {
+        self.with_vault(|u| {
+            u.data
+                .login
+                .retain(|l| data_encoding_hex(&l.endpoint_id) != id);
+            Ok(())
+        })
+    }
+
+    /// Connect to a PC's login screen with that screen's own identity. The app asks for the
+    /// app lock first, every time.
+    pub async fn connect_login_screen(
+        &self,
+        id: String,
+        device_name: String,
+        settings: StreamSettings,
+    ) -> Result<Arc<RemoteSession>, DishusError> {
+        let (key, pc) = self.with_vault(|u| {
+            let l = u
+                .data
+                .login
+                .iter()
+                .find(|l| data_encoding_hex(&l.endpoint_id) == id)
+                .ok_or(DishusError::InvalidInput {
+                    msg: "unknown login screen".into(),
+                })?;
+            Ok((
+                zeroize::Zeroizing::new(l.secret_key),
+                PairedPc {
+                    endpoint_id: l.endpoint_id,
+                    name: l.name.clone(),
+                    relays: l.relays.clone(),
+                    addrs: l.addrs.clone(),
+                    expires_at: 0,
+                },
+            ))
+        })?;
+        let net = self.net.lock().expect("net lock").clone();
+        let params = StreamParams::from(&settings);
+        let (client, session) = self
+            .rt
+            .spawn(async move {
+                let c = Arc::new(Client::new(&key, &net).await?);
+                match c.connect(&pc, &device_name, params).await {
+                    Ok(s) => Ok((c, s)),
+                    Err(e) => {
+                        c.close().await;
+                        Err(e)
+                    }
+                }
+            })
+            .await
+            .map_err(|e| DishusError::Internal { msg: e.to_string() })?
+            .map_err(net_err)?;
+        Ok(Arc::new(RemoteSession {
+            session: Arc::new(session),
+            handle: self.rt.handle().clone(),
+            own_client: Some(client),
         }))
     }
 
@@ -443,6 +588,16 @@ impl Drop for Core {
 pub struct RemoteSession {
     session: Arc<Session>,
     handle: tokio::runtime::Handle,
+    /// A login-screen session's own endpoint (its separate identity), closed with it.
+    own_client: Option<Arc<Client>>,
+}
+
+impl Drop for RemoteSession {
+    fn drop(&mut self) {
+        if let Some(c) = self.own_client.take() {
+            self.handle.spawn(async move { c.close().await });
+        }
+    }
 }
 
 impl RemoteSession {
@@ -613,6 +768,15 @@ impl RemoteSession {
     /// Named `disconnect` because UniFFI objects already get `close()` (AutoCloseable = destroy).
     pub async fn disconnect(&self) {
         let s = self.session.clone();
-        let _ = self.handle.spawn(async move { s.close().await }).await;
+        let c = self.own_client.clone();
+        let _ = self
+            .handle
+            .spawn(async move {
+                s.close().await;
+                if let Some(c) = c {
+                    c.close().await;
+                }
+            })
+            .await;
     }
 }

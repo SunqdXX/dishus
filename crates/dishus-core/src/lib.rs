@@ -15,4 +15,4 @@ uniffi::setup_scaffolding!();
 
 pub use client::{Client, NetConfig, Refusal, Session, VideoPacket};
 pub use dishus_proto as proto;
-pub use vault::{PairedPc, VaultData};
+pub use vault::{LoginScreen, PairedPc, VaultData};

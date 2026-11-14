@@ -72,12 +72,50 @@ pub struct VaultData {
     /// Phone's iroh secret key (ed25519 seed).
     pub secret_key: [u8; 32],
     pub pcs: Vec<PairedPc>,
+    /// Login screens (`dishus boot allow`), each with its own phone identity. Added after the
+    /// first release: older stores lack it (see [`open`]).
+    pub login: Vec<LoginScreen>,
+}
+
+/// The layout before login screens existed.
+#[derive(Deserialize)]
+struct VaultDataV1 {
+    secret_key: [u8; 32],
+    pcs: Vec<PairedPc>,
+}
+
+/// A PC's login-screen mode. It has its own id, and this phone talks to it with an identity
+/// used for nothing else, so the PC can allow and revoke it separately.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LoginScreen {
+    pub secret_key: [u8; 32],
+    /// The login-mode daemon's EndpointId.
+    pub endpoint_id: [u8; 32],
+    /// The PC's name.
+    pub name: String,
+    pub relays: Vec<String>,
+    pub addrs: Vec<String>,
+}
+
+impl std::fmt::Debug for LoginScreen {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoginScreen")
+            .field("name", &self.name)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for LoginScreen {
+    fn drop(&mut self) {
+        self.secret_key.zeroize();
+    }
 }
 
 impl std::fmt::Debug for VaultData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VaultData")
             .field("pcs", &self.pcs)
+            .field("login", &self.login)
             .finish_non_exhaustive()
     }
 }
@@ -111,6 +149,12 @@ fn derive(password: &[u8], salt: &[u8], p: KdfParams) -> Result<Zeroizing<[u8; 3
 }
 
 pub fn seal(password: &str, data: &VaultData, kdf: KdfParams) -> Result<Vec<u8>, VaultError> {
+    let plain =
+        Zeroizing::new(postcard::to_stdvec(data).map_err(|e| VaultError::Internal(e.to_string()))?);
+    seal_bytes(password, &plain, kdf)
+}
+
+fn seal_bytes(password: &str, plain: &[u8], kdf: KdfParams) -> Result<Vec<u8>, VaultError> {
     if password.chars().count() < 8 {
         return Err(VaultError::WeakPassword);
     }
@@ -128,8 +172,6 @@ pub fn seal(password: &str, data: &VaultData, kdf: KdfParams) -> Result<Vec<u8>,
     header.extend_from_slice(&salt);
     header.extend_from_slice(&nonce);
 
-    let plain =
-        Zeroizing::new(postcard::to_stdvec(data).map_err(|e| VaultError::Internal(e.to_string()))?);
     let cipher = XChaCha20Poly1305::new_from_slice(key.as_ref())
         .map_err(|_| VaultError::Internal("key".into()))?;
     let n = XNonce::try_from(&nonce[..]).map_err(|_| VaultError::Internal("nonce".into()))?;
@@ -137,7 +179,7 @@ pub fn seal(password: &str, data: &VaultData, kdf: KdfParams) -> Result<Vec<u8>,
         .encrypt(
             &n,
             Payload {
-                msg: &plain,
+                msg: plain,
                 aad: &header,
             },
         )
@@ -172,7 +214,14 @@ pub fn open(password: &str, blob: &[u8]) -> Result<VaultData, VaultError> {
             )
             .map_err(|_| VaultError::Decrypt)?,
     );
-    postcard::from_bytes(&plain).map_err(|_| VaultError::Format)
+    postcard::from_bytes::<VaultData>(&plain).or_else(|_| {
+        let old: VaultDataV1 = postcard::from_bytes(&plain).map_err(|_| VaultError::Format)?;
+        Ok(VaultData {
+            secret_key: old.secret_key,
+            pcs: old.pcs,
+            login: Vec::new(),
+        })
+    })
 }
 
 /// Generate a fresh identity.
@@ -192,6 +241,37 @@ mod tests {
         t: 2,
         p: 1,
     };
+
+    #[test]
+    fn a_store_from_before_login_screens_still_opens() {
+        #[derive(Serialize)]
+        struct V1<'a> {
+            secret_key: [u8; 32],
+            pcs: &'a [PairedPc],
+        }
+        let d = sample();
+        let plain = postcard::to_stdvec(&V1 {
+            secret_key: d.secret_key,
+            pcs: &d.pcs,
+        })
+        .unwrap();
+        let blob = seal_bytes("password123", &plain, FAST).unwrap();
+        let back = open("password123", &blob).unwrap();
+        assert_eq!(back.secret_key, d.secret_key);
+        assert_eq!(back.pcs, d.pcs);
+        assert!(back.login.is_empty());
+        // and with a login screen it round-trips
+        let mut d = sample();
+        d.login.push(LoginScreen {
+            secret_key: [4; 32],
+            endpoint_id: [5; 32],
+            name: "desk".into(),
+            relays: vec![],
+            addrs: vec!["10.0.0.2:1".into()],
+        });
+        let blob = seal("password123", &d, FAST).unwrap();
+        assert_eq!(open("password123", &blob).unwrap(), d);
+    }
 
     fn sample() -> VaultData {
         let mut d = new_identity().unwrap();
