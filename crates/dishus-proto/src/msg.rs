@@ -233,10 +233,15 @@ pub enum ServerMsg {
     Bye {
         reason: ByeReason,
     },
-    /// session/2 only. Audio datagrams follow: Opus, 20 ms packets.
+    /// session/2 and up. Audio datagrams follow: Opus, 20 ms packets.
     AudioStarted {
         sample_rate: u32,
         channels: u8,
+    },
+    /// session/3 only, right after `Welcome`: may the phone send files, and how big.
+    FilesInfo {
+        enabled: bool,
+        max_bytes: u64,
     },
 }
 
@@ -295,7 +300,10 @@ impl Validate for ServerMsg {
                     Ok(())
                 }
             }
-            ServerMsg::Pong { .. } | ServerMsg::Renewed { .. } | ServerMsg::Bye { .. } => Ok(()),
+            ServerMsg::Pong { .. }
+            | ServerMsg::Renewed { .. }
+            | ServerMsg::Bye { .. }
+            | ServerMsg::FilesInfo { .. } => Ok(()),
         }
     }
 }
@@ -458,6 +466,13 @@ mod tests {
             channels: 2,
         };
         assert!(bad.validate().is_err());
+        // session/3's message comes after every older one.
+        let files = postcard::to_allocvec(&ServerMsg::FilesInfo {
+            enabled: false,
+            max_bytes: 1,
+        })
+        .unwrap();
+        assert_eq!(files, [7, 0, 1]);
     }
 
     #[test]
