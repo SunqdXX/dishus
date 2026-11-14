@@ -72,9 +72,28 @@ median 68 ms; video fps median 31, 17 PC drops, 3 keyframes, longest gap 2.9 s (
 during the run). The app RTT median was 5 ms, so most of that run was probably on Wi-Fi:
 it does not prove video is unaffected on a real mobile link.
 
-Not done: Windows (WASAPI loopback + libopus, needs CI and a real Windows PC); one 4 s
-stretch at 38 packets/s on Wi-Fi was not explained; following a changed default output is
-untested.
+Not done: Windows sound (on the branch windows-sound, waiting for a real Windows PC);
+following a changed default output on Linux is untested.
+
+### Sound check and fix (2026-11-14)
+
+Owner's phone, music playing, 30 s each (phone counters):
+
+| | packets/s | lost | underruns | buffer |
+|---|---|---|---|---|
+| DiShus alone | 50 | 0 | 0 | 84 ms |
+| + PC screen recorder | 50 | 0 | 1 | 76 ms |
+| + scrcpy recording the phone with its sound | 30 | 0 | 31 | 36 ms |
+
+A second scrcpy run was clean, so scrcpy is not the cause by itself. The owner heard glitches
+after reopening the app, after a long run, and after toggling the sound; toggling again fixed
+it. In every bad stretch the phone got 27-39 packets/s, numbered without gaps, and the delay
+did not grow: the PC handed over too few packets before numbering them (a phone or network
+problem would show gaps or growing delay). Not reproduced on demand: 2 app reopens and 6
+toggles by adb were clean. Fix: the PC counts packets per second from its capture;
+3 seconds in a row with 1-39 (0 = idle output) restart the capture, at most once per 20 s, and
+log a warning with the timestamp jumps. Packet numbers carry on. e2e test with a capture slowed
+to 30/s (fails without the fix). Built for the owner to install by hand; not proven in real use yet.
 
 ## Next (none started; each needs the owner's go)
 
