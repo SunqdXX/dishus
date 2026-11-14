@@ -462,7 +462,9 @@ mod sys {
     }
 }
 
+// Win32 calls with NUL-terminated strings; each block says why it is sound.
 #[cfg(windows)]
+#[allow(unsafe_code)]
 mod sys {
     use std::{
         fs::{self, File},

@@ -76,6 +76,7 @@ fn parse_user_dirs(file: &str, home: &Path) -> Option<PathBuf> {
 
 /// The user's Downloads folder (wherever they moved it), else %USERPROFILE%\Downloads.
 #[cfg(windows)]
+#[allow(unsafe_code)]
 fn windows_downloads() -> Result<PathBuf> {
     use windows::Win32::{
         System::Com::CoTaskMemFree,
