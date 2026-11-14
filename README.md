@@ -62,8 +62,9 @@ one command to install anything missing. It may also print `sudo` commands for [
 mouse access](#keyboard-and-mouse-access). On Wayland, `dishus pair` first asks which screen to
 share: pick the **whole screen** and tick "remember" (Hyprland: "Allow a restore token").
 
-**Updating on Linux:** run `./install.sh` from the new release (it also replaces the systemd unit,
-which the X11 fix needs), then `systemctl --user restart dishus`.
+**Updating on Linux:** run `./install.sh` from the new release. It replaces the binaries and the
+systemd unit (the X11 fix needs the new unit) and restarts DiShus; a connected phone drops for a
+few seconds and reconnects by itself.
 
 **Phone:** install the APK, open DiShus and choose an app password (it locks the app and encrypts
 your pairings; it can't be recovered). Tap **Scan QR** and scan the PC's code, then tap your PC and

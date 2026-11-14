@@ -122,6 +122,8 @@ pipeline in the same sandbox on XFCE).
 Not tested: the setup-capture / pair change on a real X11 session (tests and CI only),
 multi-monitor X11, other display managers (LightDM, GDM on X11), X sessions that don't export
 `DISPLAY` to systemd. Installed users get the new unit only when they reinstall.
+`install.sh` now restarts a running service, so an update takes effect at once (checked with a
+stub `systemctl` only).
 
 ## Lock screen of a logged-in session (tested 2026-11-14)
 

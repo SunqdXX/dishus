@@ -95,9 +95,12 @@ if [ -x "$bin/dishus-share-picker" ] && command -v hyprctl >/dev/null 2>&1; then
   fi
 fi
 
-# 5. Start
+# 5. Start, or restart so an update runs the new binary and unit
+was_running=$(systemctl --user is-active --quiet dishus.service && echo yes || true)
 systemctl --user daemon-reload
-systemctl --user enable --now dishus.service
+systemctl --user enable dishus.service
+systemctl --user restart dishus.service
+[ -z "$was_running" ] || ok "restarted DiShus; a connected phone drops for a few seconds and reconnects by itself"
 sleep 1
 if "$bin/dishus" status >/dev/null 2>&1; then
   ok "daemon running"
