@@ -143,7 +143,8 @@ tried on branches and are parked, not installed, not recommended.
 4. Turning the PC on from the phone (Wake-on-LAN). The owner's request was "the PC opener";
    that reading is not confirmed yet. Needs Wake-on-LAN enabled in the BIOS by the owner, and
    only works from the same network unless the router or another device can send the packet.
-5. Controlling the login screen, to type the password from the phone. Windows: a system service
+5. Controlling the login screen, to type the password from the phone (tried on branch
+   `login-mode`, now parked; see the lock-screen note above). Windows: a system service
    that captures the Winlogon desktop (would also cover UAC prompts). Linux: a root helper for
    the greeter, which the portal can't capture. Big and security-sensitive. The boot menu
    itself can't be done in software.
