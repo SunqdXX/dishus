@@ -68,7 +68,42 @@ enum Cmd {
     /// Remove DiShus from this PC (pairings and keys are kept in %APPDATA%\dishus).
     #[cfg(windows)]
     Uninstall,
+    /// Login-screen mode (the `dishus-boot` system service), if installed.
+    #[cfg(not(windows))]
+    Boot {
+        #[command(subcommand)]
+        cmd: BootCmd,
+    },
 }
+
+#[cfg(not(windows))]
+#[derive(Subcommand)]
+enum BootCmd {
+    /// Is it running, at the login screen, which phones may use it.
+    Status,
+    /// Phones allowed at the login screen.
+    List,
+    /// Allow a paired phone at the login screen (asks for sudo). Max 30 days; run again to renew.
+    Allow {
+        /// Name or id prefix of a phone paired with your session (`dishus list`).
+        device: String,
+        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u16).range(1..=30))]
+        days: u16,
+        /// Internal: the name to store (set when re-run under sudo).
+        #[arg(long, hide = true)]
+        name: Option<String>,
+    },
+    /// Remove a phone from login mode (also done by `dishus revoke`).
+    Revoke { device: String },
+    /// Cut the login-screen session and refuse all until `dishus boot unlock`.
+    Kill,
+    /// Leave login-mode lockdown.
+    Unlock,
+}
+
+/// The login-mode daemon's control socket (systemd RuntimeDirectory=dishus-boot).
+#[cfg(not(windows))]
+const BOOT_SOCKET: &str = "/run/dishus-boot/control.sock";
 
 /// `dishus doctor` runs `dishus-daemon --doctor`, preferring the daemon installed next to this
 /// binary (the tarball and `cargo install` put them together), then PATH.
@@ -160,7 +195,11 @@ fn write_lockdown_offline() -> Result<PathBuf> {
 
 #[cfg(not(windows))]
 async fn connect() -> Result<UnixStream> {
-    let path = runtime_socket()?;
+    connect_to(runtime_socket()?).await
+}
+
+#[cfg(not(windows))]
+async fn connect_to(path: PathBuf) -> Result<UnixStream> {
     UnixStream::connect(&path).await.with_context(|| {
         format!(
             "daemon not running? ({}). Try: {START_HINT}",
@@ -202,7 +241,26 @@ async fn connect() -> Result<tokio::net::windows::named_pipe::NamedPipeClient> {
 }
 
 async fn call(req: IpcRequest, wait: Duration) -> Result<IpcResponse> {
-    let mut s = connect().await?;
+    exchange(connect().await?, req, wait).await
+}
+
+/// Ask the login-mode daemon.
+#[cfg(not(windows))]
+async fn call_boot(req: IpcRequest, wait: Duration) -> Result<IpcResponse> {
+    let path = PathBuf::from(BOOT_SOCKET);
+    let s = UnixStream::connect(&path).await.with_context(|| {
+        format!(
+            "login mode not running ({}). It is off unless installed and enabled: systemctl status dishus-boot",
+            path.display()
+        )
+    })?;
+    exchange(s, req, wait).await
+}
+
+async fn exchange<S>(mut s: S, req: IpcRequest, wait: Duration) -> Result<IpcResponse>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     write_frame(&mut s, &req, MAX_IPC_FRAME).await?;
     let resp: IpcResponse = timeout(wait, read_frame(&mut s, MAX_IPC_FRAME))
         .await
@@ -466,9 +524,18 @@ async fn main() -> Result<()> {
         )
         .await
         {
-            Ok(IpcResponse::Ok(m)) => println!("{m}"),
+            Ok(IpcResponse::Ok(m)) => {
+                println!("{m}");
+                #[cfg(not(windows))]
+                also_boot(IpcRequest::Revoke { selector: device }).await;
+            }
             Ok(r) => bail!("unexpected reply {r:?}"),
             Err(e) if format!("{e}").contains("daemon not running") => {
+                #[cfg(not(windows))]
+                also_boot(IpcRequest::Revoke {
+                    selector: device.clone(),
+                })
+                .await;
                 let n = offline_revoke(&device)?;
                 println!("revoked {n} (daemon was not running; edited devices.toml)");
             }
@@ -488,7 +555,11 @@ async fn main() -> Result<()> {
         },
         // Panic button: don't wait long on a hung daemon before falling back.
         Cmd::Kill => match call(IpcRequest::Kill, Duration::from_secs(3)).await {
-            Ok(IpcResponse::Ok(m)) => println!("{m}"),
+            Ok(IpcResponse::Ok(m)) => {
+                println!("{m}");
+                #[cfg(not(windows))]
+                also_boot(IpcRequest::Kill).await;
+            }
             Ok(r) => bail!("unexpected reply {r:?}"),
             Err(e) => {
                 eprintln!("kill via daemon failed: {e:#}\nStopping the service instead.");
@@ -531,6 +602,116 @@ async fn main() -> Result<()> {
         }
         #[cfg(windows)]
         Cmd::Uninstall => setup::uninstall()?,
+        #[cfg(not(windows))]
+        Cmd::Boot { cmd } => boot(cmd).await?,
+    }
+    Ok(())
+}
+
+/// /proc/self belongs to the effective uid (no extra dependency for geteuid).
+#[cfg(not(windows))]
+fn running_as_root() -> bool {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata("/proc/self").is_ok_and(|m| m.uid() == 0)
+}
+
+/// After `dishus revoke` / `dishus kill`: do the same in login mode, if it runs.
+#[cfg(not(windows))]
+async fn also_boot(req: IpcRequest) {
+    if !std::path::Path::new(BOOT_SOCKET).exists() {
+        return;
+    }
+    match call_boot(req, Duration::from_secs(3)).await {
+        Ok(IpcResponse::Ok(m)) => println!("login mode: {m}"),
+        Ok(_) => {}
+        Err(e) => eprintln!("login mode: {e:#} (check with `dishus boot list`)"),
+    }
+}
+
+#[cfg(not(windows))]
+async fn boot(cmd: BootCmd) -> Result<()> {
+    let short = Duration::from_secs(10);
+    let ok = |r: IpcResponse| match r {
+        IpcResponse::Ok(m) => {
+            println!("{m}");
+            Ok(())
+        }
+        r => bail!("unexpected reply {r:?}"),
+    };
+    match cmd {
+        BootCmd::Status => match call_boot(IpcRequest::Status, short).await? {
+            IpcResponse::Status(s) => {
+                println!("Login mode {} (PC id {})", s.version, &s.endpoint_id[..12]);
+                println!("  video       {}", s.capture_backend);
+                println!("  input       {}", s.input_backend);
+                println!("  phones      {} allowed", s.devices);
+                if s.lockdown {
+                    println!("  LOCKDOWN    all connections refused (dishus boot unlock)");
+                }
+                for x in s.sessions {
+                    println!("  session     {} since {}", x.name, human_ago(x.since));
+                }
+            }
+            r => bail!("unexpected reply {r:?}"),
+        },
+        BootCmd::List => match call_boot(IpcRequest::List, short).await? {
+            IpcResponse::Devices(d) if d.is_empty() => {
+                println!(
+                    "No phones allowed at the login screen. Add one: dishus boot allow <phone>"
+                )
+            }
+            IpcResponse::Devices(d) => print_devices(&d),
+            r => bail!("unexpected reply {r:?}"),
+        },
+        BootCmd::Allow { device, days, name } => {
+            if running_as_root() {
+                let name = name.context("run it without sudo: dishus boot allow <phone>")?;
+                return ok(call_boot(
+                    IpcRequest::Allow {
+                        id: device,
+                        name,
+                        days,
+                    },
+                    short,
+                )
+                .await?);
+            }
+            // Find the phone among the ones paired with this session, then ask for sudo.
+            let IpcResponse::Devices(d) = call(IpcRequest::List, short).await? else {
+                bail!("unexpected reply from the DiShus daemon");
+            };
+            let hits: Vec<&IpcDevice> = d
+                .iter()
+                .filter(|x| x.name == device || x.id.starts_with(&device.to_lowercase()))
+                .collect();
+            let phone = match hits.as_slice() {
+                [one] => *one,
+                [] => bail!("no paired phone matches \"{device}\" (see `dishus list`)"),
+                _ => bail!(
+                    "\"{device}\" matches {} phones; use more of the id",
+                    hits.len()
+                ),
+            };
+            println!(
+                "Allowing \"{}\" at the login screen for {days} days (needs sudo).",
+                phone.name
+            );
+            let me = std::env::current_exe().context("finding the dishus binary")?;
+            let st = std::process::Command::new("sudo")
+                .arg(me)
+                .args(["boot", "allow", &phone.id, "--name", &phone.name])
+                .args(["--days", &days.to_string()])
+                .status()
+                .context("running sudo")?;
+            if !st.success() {
+                bail!("not allowed ({st})");
+            }
+        }
+        BootCmd::Revoke { device } => {
+            ok(call_boot(IpcRequest::Revoke { selector: device }, short).await?)?
+        }
+        BootCmd::Kill => ok(call_boot(IpcRequest::Kill, Duration::from_secs(3)).await?)?,
+        BootCmd::Unlock => ok(call_boot(IpcRequest::Unlock, short).await?)?,
     }
     Ok(())
 }
