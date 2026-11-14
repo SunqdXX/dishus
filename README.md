@@ -124,6 +124,32 @@ on, and the app remembers your choice. The volume slider is in quick settings. W
 the PC records nothing. On a weak connection the sound gets lower quality first, and drops out
 before the picture or the keyboard does. Sound works with a Linux PC for now; Windows comes later.
 
+## Sending files to the PC
+
+The paperclip button sends files from the phone to the PC. It's off on the PC until you turn it on
+(see below), and the app tells you when it's off.
+
+Be careful with this. Anyone who has your unlocked phone and its pairing can drop files on your
+PC. Files only ever go into `Downloads/DiShus`. DiShus never opens or runs them and never replaces
+a file that's already there: a second `photo.jpg` becomes `photo (1).jpg`. Odd names are cleaned up,
+so a file can't land anywhere else. Still, a file can harm your PC if you open it, so only send
+files you trust, and only open files there you sent yourself.
+
+To turn it on, add this to `config.toml` (see [Settings](#settings)) and restart DiShus:
+
+```toml
+[files]
+enabled = true
+max_file_mb = 2048   # the largest file the PC takes, in MB
+```
+
+The PC also says no when the disk would have less than 1 GB left. One file goes at a time; pick
+several and they go one after another. Cancel stops the current file and the PC deletes the part
+it got. If the connection drops, the file isn't kept, so send it again. `dishus status` shows
+whether it's on, the folder, and how many files came in. To turn it off again, set
+`enabled = false` (or remove the lines) and restart DiShus. Sending files needs DiShus 0.69 or
+newer on both the PC and the phone.
+
 Lost your phone, or something looks wrong? Run `dishus kill` on the PC. It cuts every connection
 at once and refuses new ones until you run `dishus unlock`. To remove one phone for good:
 `dishus revoke <phone>`.
@@ -281,6 +307,10 @@ encoder = "auto"              # Linux: auto, nvenc, vaapi, vaapi-lp, x264, openh
                               # Windows: auto, nvenc, qsv, amf, hardware, software
 max_bitrate_kbps = 20000
 show_cursor = true
+
+[files]
+enabled = false               # true = take files from your paired phone into Downloads/DiShus
+max_file_mb = 2048
 ```
 
 Restart DiShus after editing: on Linux `systemctl --user restart dishus`, on Windows open the
@@ -380,6 +410,7 @@ gives you a stand-in for the phone on your PC, handy for debugging.
 ## Known limits
 
 - One phone connected at a time. A new connection replaces the old one.
+- Files only go from the phone to the PC, one at a time, and a cut transfer starts over.
 - Sound needs DiShus 0.31 or newer on both the PC and the phone, and a Linux PC. It's about
   0.1 seconds behind the picture.
 - The delay shown in the app is the network round trip, not the full delay from the PC screen to

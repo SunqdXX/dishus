@@ -95,6 +95,42 @@ toggles by adb were clean. Fix: the PC counts packets per second from its captur
 log a warning with the timestamp jumps. Packet numbers carry on. e2e test with a capture slowed
 to 30/s (fails without the fix). Built for the owner to install by hand; not proven in real use yet.
 
+## File send, phone to PC (branch file-send, local, 2026-11-14)
+
+Built on `audio-watchdog` (main plus the sound restart fix), nothing from `windows-sound`.
+Not pushed, not released.
+
+- Protocol: new ALPN `dishus/session/3` (session/2 plus files). The phone offers 3, 2 and 1; old
+  PCs keep working without the button. Feature checks compare versions (>= 2 for sound), so
+  sound works on session/3 too. After Welcome the PC sends `FilesInfo` (on/off, max size).
+  One QUIC stream per file: offer (name, size), the PC accepts or refuses with a reason, the
+  bytes, then the PC answers with the name it really used.
+- PC rules: off by default (`[files] enabled = false`), 2048 MB per file, refuses when the disk
+  would have under 1 GB left, one file at a time. Only `Downloads/DiShus` (`XDG_DOWNLOAD_DIR`
+  or user-dirs.dirs on Linux, the Downloads known folder on Windows). Names keep only the last
+  path part, lose control, invisible (RTL override) and Windows-forbidden characters and
+  leading or trailing dots; Windows device names get a `_` on every OS; max 200 bytes. Data
+  goes to a new `.part` (O_EXCL, never executable) and is moved with a no-replace rename, so a
+  taken name becomes `name (1).ext` and nothing is overwritten, even a file created during the
+  transfer. Exactly the announced size or nothing; cancel, stalls (30 s), revoke, kill or the
+  session ending delete the `.part`. Never opened. Windows adds the internet zone mark. Log
+  line, desktop notification, and a `files` line in `dishus status`.
+- App: paperclip button (session/3 only), "file sending is off on this PC" with how to turn it
+  on, a one-time warning, Android's picker (several files), progress with speed and Cancel,
+  a summary with the saved names. The picker gets 2 minutes before it counts as leaving the app
+  (it used to end the session and could lock the app).
+- Proof: 12 unit tests (names, numbering, limits, no overwrite, leftover `.part` kept, not
+  executable), 11 e2e tests (off, bytes and no overwrite, hostile names incl. `../../x`,
+  `..\..\y`, `CON.txt`, cancel halfway, wrong sizes, busy, revoke mid-transfer, nothing on
+  session/2, sound on session/3, phone core send and cancel). Each was seen failing first.
+  A real daemon (temp dirs) with `desktop_client send-file`: 3.5 MB saved byte for byte,
+  `big (1).bin`, `../../escape.txt` -> `escape.txt` in the folder, `CON.txt` -> `_CON.txt`,
+  too big refused, cancel left nothing. Release APK builds with the same signing key.
+- Not tested: a real phone (picker, grace, progress bar, cancel), anything on Windows (the
+  Windows code is not even compiled yet: no Windows target here; CI would compile it on a
+  push), a real slow network. Files come out 0600 in a 0700 folder on Linux (the daemon's
+  private umask), which is safe but stricter than a browser download.
+
 ## Next (none started; each needs the owner's go)
 
 1. Later (the owner postponed it on 2026-11-14): Windows video without a video processor, a
