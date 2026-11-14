@@ -12,6 +12,8 @@ ExecStart=/usr/bin/dishus-daemon
 Restart=on-failure
 RestartSec=3
 Environment=DISHUS_LOG=info
+# /tmp is read-only below (ProtectSystem=strict, no PrivateTmp): temp files go here instead.
+Environment=TMPDIR=%t/dishus
 
 # State lives in ~/.config/dishus (config, devices, identity), ~/.local/state/dishus
 # (portal token, lockdown flag) and $XDG_RUNTIME_DIR/dishus (control socket).
@@ -31,7 +33,6 @@ ProtectSystem=strict
 # Home is read-only except the directories above. (Needs unprivileged user namespaces, which
 # Arch enables; on systems without them systemd ignores these for user units.)
 ProtectHome=read-only
-PrivateTmp=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
@@ -49,6 +50,8 @@ SystemCallErrorNumber=EPERM
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 # Not set, with reasons:
 #  PrivateDevices=   would hide /dev/uinput, /dev/nvidia*, /dev/dri
+#  PrivateTmp=       hides the X11 session's auth cookie (SDDM/LightDM put it in /tmp), so
+#                    X capture fails with "Authorization required"
 #  MemoryDenyWriteExecute= the NVIDIA/CUDA user-space driver JIT-compiles and needs W+X pages
 #  PrivateNetwork=   it's a network service
 #  ProtectProc=/ProcSubset= only effective for system units
