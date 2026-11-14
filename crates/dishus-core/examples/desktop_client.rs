@@ -7,6 +7,9 @@
 //! cargo run -p dishus-core --example desktop_client -- keys 125,2   # tap Super+1
 //! cargo run -p dishus-core --example desktop_client -- mouse move:200:0,right   # move, right-click
 //! cargo run -p dishus-core --example desktop_client -- audio --seconds 10   # count PC audio packets
+//! # login-screen mode (no pairing there: root allows the client id printed at start)
+//! cargo run -p dishus-core --example desktop_client -- add-pc <PC id> --addr 127.0.0.1:PORT
+//! cargo run -p dishus-core --example desktop_client -- taps 20,18,31,20,28   # after the picture
 //! ```
 //!
 //! State (identity + paired PC) is kept in `$DISHUS_CLIENT_DIR` (default
@@ -113,7 +116,25 @@ async fn main() -> Result<()> {
             v.pcs.push(pc);
             save(&v)?;
         }
-        "view" | "keys" | "mouse" | "renew" | "audio" => {
+        "add-pc" => {
+            // Login mode has no pairing; store the PC by its id (`dishus boot status`).
+            let id: iroh::EndpointId = args
+                .get(1)
+                .context("usage: add-pc <PC id> --addr HOST:PORT")?
+                .parse()?;
+            let pc = dishus_core::vault::PairedPc {
+                endpoint_id: *id.as_bytes(),
+                name: arg_val(&args, "--name").unwrap_or_else(|| "login-screen".into()),
+                relays: vec![],
+                addrs: arg_val(&args, "--addr").into_iter().collect(),
+                expires_at: 0,
+            };
+            v.pcs.retain(|p| p.endpoint_id != pc.endpoint_id);
+            v.pcs.push(pc);
+            save(&v)?;
+            eprintln!("added");
+        }
+        "view" | "keys" | "mouse" | "renew" | "audio" | "taps" => {
             let pc = v
                 .pcs
                 .last()
@@ -160,6 +181,36 @@ async fn main() -> Result<()> {
                 }
                 tokio::time::sleep(Duration::from_millis(300)).await;
                 s.close().await;
+                return Ok(());
+            }
+            if cmd == "taps" {
+                // Like a person on the phone: wait for the picture, then tap keys one by one
+                // (login mode drops input sent without a live picture).
+                let codes: Vec<u16> = args
+                    .get(1)
+                    .context("usage: taps 20,18,31,20,28")?
+                    .split(',')
+                    .map(|c| c.parse())
+                    .collect::<Result<_, _>>()?;
+                tokio::time::timeout(Duration::from_secs(20), s.next_video())
+                    .await
+                    .context("no picture")?
+                    .context("no picture")?;
+                eprintln!("picture after {} ms; tapping", t0.elapsed().as_millis());
+                for c in codes {
+                    for down in [true, false] {
+                        s.send(ClientMsg::Key { code: c, down })?;
+                        // keep reading video meanwhile
+                        let until = Instant::now() + Duration::from_millis(80);
+                        while let Ok(Some(_)) =
+                            tokio::time::timeout_at(until.into(), s.next_video()).await
+                        {
+                        }
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                s.close().await;
+                client.close().await;
                 return Ok(());
             }
             if cmd == "mouse" {
