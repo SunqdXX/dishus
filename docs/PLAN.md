@@ -86,7 +86,7 @@ its state". Causes and fixes:
 - The service can start before the X session exports `DISPLAY` to systemd, and then never
   had one ("no X11 display" until a restart). Each capture now reads `DISPLAY`/`XAUTHORITY`
   from the systemd user manager, only for X11 sessions (nothing changes when the manager has
-  a Wayland display).
+  a Wayland display). The same goes for `dishus setup-capture` / `dishus pair`.
 - A pipeline that can't start now names the element and its error instead of the generic
   GStreamer message; an unreadable auth file is reported as such.
 
@@ -94,9 +94,13 @@ Tested: Xvfb tests with an auth cookie (stream, missing cookie, wrong cookie), a
 On a real XFCE desktop (X11, one monitor, SDDM), with the dev build in the new unit's
 sandbox and no `DISPLAY` of its own, after a log out / log in: the phone streamed via NVENC
 (checked in the log only) and via x264 with the GPU hidden from the service (seen on the phone).
-Not tested: Hyprland after this change (no behaviour change intended there), multi-monitor
-X11, other display managers (LightDM, GDM on X11), X sessions that don't export `DISPLAY` to
-systemd. Installed users get the new unit only when they reinstall.
+On Hyprland, with the dev build in the shipped unit's sandbox: portal stream at native size
+via NVENC with no errors and no X11 lookup in the log; sound and keyboard/mouse confirmed by
+the owner. The phone did not try a lower resolution there (GPU scaling ran only in a hand-made
+pipeline in the same sandbox on XFCE).
+Not tested: the setup-capture / pair change on a real X11 session (tests and CI only),
+multi-monitor X11, other display managers (LightDM, GDM on X11), X sessions that don't export
+`DISPLAY` to systemd. Installed users get the new unit only when they reinstall.
 
 ## Next (none started; each needs the owner's go)
 
