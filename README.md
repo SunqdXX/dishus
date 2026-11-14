@@ -147,8 +147,8 @@ The PC also says no when the disk would have less than 1 GB left. One file goes 
 several and they go one after another. Cancel stops the current file and the PC deletes the part
 it got. If the connection drops, the file isn't kept, so send it again. `dishus status` shows
 whether it's on, the folder, and how many files came in. To turn it off again, set
-`enabled = false` (or remove the lines) and restart DiShus. Sending files needs DiShus 0.69 or
-newer on both the PC and the phone.
+`enabled = false` (or remove the lines) and restart DiShus. The PC and the phone both need a
+DiShus version that has file sending; with an older one on either side the button doesn't show.
 
 Lost your phone, or something looks wrong? Run `dishus kill` on the PC. It cuts every connection
 at once and refuses new ones until you run `dishus unlock`. To remove one phone for good:

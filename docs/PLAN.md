@@ -117,7 +117,7 @@ Not pushed, not released.
   line, desktop notification, and a `files` line in `dishus status`.
 - App: paperclip button (session/3 only), "file sending is off on this PC" with how to turn it
   on, a one-time warning, Android's picker (several files), progress with speed and Cancel,
-  a summary with the saved names. The picker gets 2 minutes before it counts as leaving the app
+  a summary with the saved names. The open picker gets at most 60 s before it counts as leaving the app
   (it used to end the session and could lock the app).
 - Proof: 12 unit tests (names, numbering, limits, no overwrite, leftover `.part` kept, not
   executable), 11 e2e tests (off, bytes and no overwrite, hostile names incl. `../../x`,

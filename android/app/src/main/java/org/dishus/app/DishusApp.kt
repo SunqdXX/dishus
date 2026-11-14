@@ -80,6 +80,8 @@ class DishusApp : Application() {
 
             override fun onStart(owner: LifecycleOwner) {
                 stopped = false
+                // back in front: the picker is closed, whatever happened in it
+                pickerUntil = 0L
                 handler.removeCallbacks(pickerExpired)
                 backgrounded.value = false
                 handler.removeCallbacks(lockRunnable)
@@ -123,4 +125,4 @@ class DishusApp : Application() {
 }
 
 /** How long the file picker may stay open before leaving the app counts as leaving it. */
-private const val PICKER_GRACE_MS = 120_000L
+private const val PICKER_GRACE_MS = 60_000L
