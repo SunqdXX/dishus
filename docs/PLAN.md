@@ -72,9 +72,42 @@ median 68 ms; video fps median 31, 17 PC drops, 3 keyframes, longest gap 2.9 s (
 during the run). The app RTT median was 5 ms, so most of that run was probably on Wi-Fi:
 it does not prove video is unaffected on a real mobile link.
 
-Not done: Windows (WASAPI loopback + libopus, needs CI and a real Windows PC); one 4 s
-stretch at 38 packets/s on Wi-Fi was not explained; following a changed default output is
-untested.
+Not done: following a changed default output on Linux is untested.
+
+### Sound check and fix (2026-11-14, local commits, not pushed or installed)
+
+Owner's phone, music playing, 30 s each (phone counters):
+
+| | packets/s | lost | underruns | buffer |
+|---|---|---|---|---|
+| DiShus alone | 50 | 0 | 0 | 84 ms |
+| + PC screen recorder | 50 | 0 | 1 | 76 ms |
+| + scrcpy recording the phone with its sound | 30 | 0 | 31 | 36 ms |
+
+A second scrcpy run was clean, so scrcpy is not the cause by itself. The owner heard glitches
+after reopening the app, after a long run, and after toggling the sound; toggling again fixed
+it. In every bad stretch the phone got 27-39 packets/s, numbered without gaps, and the delay
+did not grow: the PC handed over too few packets before numbering them (a phone or network
+problem would show gaps or growing delay). Not reproduced on demand: 2 app reopens and 6
+toggles by adb were clean. Fix (b48695b): the PC counts packets per second from its capture;
+3 seconds in a row with 1-39 (0 = idle output) restart the capture, at most once per 20 s, and
+log a warning with the timestamp jumps. Packet numbers carry on. e2e test with a capture slowed
+to 30/s (fails without the fix). Not yet installed on the owner's PC, so not proven in real use.
+
+### Windows sound (89f8828, local, NOT COMPILED for Windows yet)
+
+The Windows worker has an "audio" mode: WASAPI loopback of the default output, converted by
+Windows to 48 kHz 16-bit stereo (fallback: the device's 48 kHz float mix format), 20 ms
+frames, libopus from the `opus` crate (built from source; Windows has no Opus encoder; about
+0.4 MB, BSD-3). A changed or removed default output restarts the capture on the new default.
+The restart loop is now shared by Linux and Windows (capture/audio_worker.rs); the Linux worker
+was rerun on it (test tone, 2 forced restarts, clean exit). The PCM framing is unit-tested on
+Linux. Blocked: this PC has no Windows Rust target and CI only runs on push, so the WASAPI code
+has never been compiled. Next: CI build (needs the owner's OK to push a branch), then the VM
+with the test tone (`DISHUS_TEST_SOURCE=1`, no VM change needed) or a VM sound device (owner's
+OK needed), then a real Windows PC and phone (the owner's friend). Known gap: on Windows the
+audio and video timestamps use different clocks, so the phone's av_offset log is meaningless
+there (playback is not affected).
 
 ## Next (none started; each needs the owner's go)
 
