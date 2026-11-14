@@ -30,10 +30,11 @@ fn ready() -> bool {
     let ok = have("Xvfb", "-help")
         && have("xauth", "-V")
         && have("gst-inspect-1.0", "ximagesrc")
-        && have("gst-inspect-1.0", "x264enc");
+        && have("gst-inspect-1.0", "x264enc")
+        && have("gst-inspect-1.0", "h264parse");
     if !ok {
         eprintln!(
-            "SKIPPED: needs Xvfb, xauth, ximagesrc (plugins-good) and x264enc (plugins-ugly)"
+            "SKIPPED: needs Xvfb, xauth, ximagesrc (plugins-good), x264enc (plugins-ugly), h264parse (plugins-bad)"
         );
     }
     ok
