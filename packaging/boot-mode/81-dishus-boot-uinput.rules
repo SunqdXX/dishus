@@ -1,0 +1,4 @@
+# DiShus login-screen mode: the dishus-boot user may use /dev/uinput (to type at the login
+# screen), and nothing else in /dev/input. Runs after the seat ACLs (73-seat-late), which
+# reset user entries whenever udev handles the device.
+KERNEL=="uinput", SUBSYSTEM=="misc", RUN+="/usr/bin/setfacl -m u:dishus-boot:rw /dev/uinput"

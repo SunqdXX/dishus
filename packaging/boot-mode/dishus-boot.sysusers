@@ -1,0 +1,2 @@
+# DiShus login-screen mode runs as this user (no login, no shell).
+u dishus-boot - "DiShus login-screen mode" /var/lib/dishus-boot /usr/bin/nologin

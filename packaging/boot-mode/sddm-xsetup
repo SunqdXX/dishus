@@ -1,0 +1,13 @@
+#!/bin/sh
+# DiShus login-screen mode. SDDM runs this as root when the login screen's X server is up
+# (DisplayCommand, set in /etc/sddm.conf.d/50-dishus-boot.conf), with DISPLAY and XAUTHORITY
+# set. It runs SDDM's normal Xsetup first, then lets the dishus-boot user see this display.
+# It never fails and never takes long: whatever goes wrong here, the login screen shows.
+orig=/usr/share/sddm/scripts/Xsetup
+if [ -f "$orig" ]; then
+    timeout 30 sh "$orig"
+fi
+if command -v xhost >/dev/null 2>&1; then
+    timeout 5 xhost +SI:localuser:dishus-boot >/dev/null 2>&1
+fi
+exit 0

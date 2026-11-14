@@ -1,0 +1,61 @@
+# DiShus login-screen mode: lets a phone you allowed (`dishus boot allow`) see the login
+# screen and type there. Installed and enabled only by packaging/boot-mode/install.sh;
+# undo with uninstall.sh. See docs/PLAN.md "Login-screen mode".
+#
+# No ordering against the display manager on purpose: the login screen never waits for this,
+# and nothing here can stop it from showing up.
+[Unit]
+Description=DiShus login-screen mode
+After=network.target systemd-logind.service systemd-udevd.service
+
+[Service]
+Type=simple
+User=dishus-boot
+Group=dishus-boot
+ExecStartPre=+/usr/local/lib/dishus-boot/uinput-access
+ExecStart=/usr/local/lib/dishus-boot/dishus-daemon --boot
+Restart=on-failure
+RestartSec=5
+Environment=DISHUS_BOOT_OWNER_UID=@OWNER_UID@
+Environment=HOME=/var/lib/dishus-boot
+Environment=GST_REGISTRY=/var/lib/dishus-boot/gstreamer-registry.bin
+# allowlist, its own key, limits.toml: private to dishus-boot
+StateDirectory=dishus-boot
+StateDirectoryMode=0700
+# control.sock (who may do what is checked per caller) and history (read by the owner)
+RuntimeDirectory=dishus-boot
+RuntimeDirectoryMode=0755
+UMask=0077
+
+# Sandbox. What it needs: the network, the system bus (logind), /dev/uinput, the login
+# screen's X socket (/tmp/.X11-unix, read-only here; connecting works on a read-only mount).
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=no
+DevicePolicy=closed
+DeviceAllow=/dev/uinput rw
+PrivateUsers=no
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @debug @cpu-emulation @obsolete
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+# (no MemoryDenyWriteExecute: GStreamer's ORC compiles code at run time)
+
+[Install]
+WantedBy=multi-user.target

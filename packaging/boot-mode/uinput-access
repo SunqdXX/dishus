@@ -1,0 +1,5 @@
+#!/bin/sh
+# Run as root by dishus-boot.service before the daemon starts (ExecStartPre=+): load uinput
+# and give dishus-boot access to /dev/uinput only. The udev rule keeps it after udev events.
+modprobe uinput 2>/dev/null
+setfacl -m u:dishus-boot:rw /dev/uinput
