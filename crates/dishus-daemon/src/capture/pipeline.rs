@@ -96,6 +96,30 @@ pub fn candidates(pref: &str) -> Vec<Encoder> {
         .collect()
 }
 
+/// The element that failed and its own error, from a pipeline that wouldn't start (GStreamer's
+/// state-change error itself only says "Element failed to change its state").
+pub fn bus_error(pipeline: &gst::Pipeline) -> Option<String> {
+    let bus = pipeline.bus()?;
+    let msg = bus.pop_filtered(&[gst::MessageType::Error])?;
+    let gst::MessageView::Error(e) = msg.view() else {
+        return None;
+    };
+    let element = msg
+        .src()
+        .map(|s| s.name().to_string())
+        .unwrap_or_else(|| "?".into());
+    let mut out = format!("{element}: {}", e.error());
+    if let Some(d) = e.debug() {
+        out.push_str(&format!(" ({d})"));
+    }
+    if element.starts_with("ximagesrc") {
+        out.push_str(
+            " [X11: check DISPLAY and that the XAUTHORITY file is readable by the service]",
+        );
+    }
+    Some(out)
+}
+
 /// Where pixels come from.
 pub enum Source {
     PipeWire { fd: OwnedFd, node: u32 },
@@ -322,9 +346,11 @@ fn start_one(
             .build(),
     );
 
-    pipeline
-        .set_state(gst::State::Playing)
-        .with_context(|| format!("starting {} pipeline", enc.name()))?;
+    if let Err(e) = pipeline.set_state(gst::State::Playing) {
+        let why = bus_error(&pipeline).unwrap_or_else(|| e.to_string());
+        let _ = pipeline.set_state(gst::State::Null);
+        bail!("starting {} pipeline: {why}", enc.name());
+    }
     let stop = Arc::new(AtomicBool::new(false));
     let bus = pipeline.bus().context("no bus")?;
     let deadline = std::time::Instant::now() + Duration::from_secs(6);
@@ -491,9 +517,11 @@ pub fn start_audio(
             })
             .build(),
     );
-    pipeline
-        .set_state(gst::State::Playing)
-        .context("starting the audio pipeline")?;
+    if let Err(e) = pipeline.set_state(gst::State::Playing) {
+        let why = bus_error(&pipeline).unwrap_or_else(|| e.to_string());
+        let _ = pipeline.set_state(gst::State::Null);
+        bail!("starting the audio pipeline: {why}");
+    }
     let stop = Arc::new(AtomicBool::new(false));
     let bus = pipeline.bus().context("no bus")?;
     let (p, st) = (pipeline.clone(), stop.clone());
@@ -695,6 +723,20 @@ mod tests {
             lo * 2 < hi,
             "24 kbps packets ({lo} B) not smaller than 64 kbps ({hi} B)"
         );
+    }
+
+    #[test]
+    fn a_pipeline_that_wont_start_names_the_element() {
+        init().unwrap();
+        let pipeline = gst::parse::launch("filesrc location=/nonexistent/dishus-test ! fakesink")
+            .unwrap()
+            .downcast::<gst::Pipeline>()
+            .unwrap();
+        assert!(pipeline.set_state(gst::State::Playing).is_err());
+        let why = bus_error(&pipeline).expect("the element's error");
+        let _ = pipeline.set_state(gst::State::Null);
+        assert!(why.starts_with("filesrc"), "{why}");
+        assert!(why.contains("nonexistent"), "{why}");
     }
 
     #[test]
