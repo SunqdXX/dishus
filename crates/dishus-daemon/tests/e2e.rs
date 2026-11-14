@@ -1415,3 +1415,59 @@ async fn sound_still_works_on_session3() {
         .unwrap()
         .unwrap();
 }
+
+// ---------- file send through the phone core (what the app uses) ----------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn phone_core_sends_files_and_cancels() {
+    let pc = Pc::start_files(8).await;
+    let ph = phone().await;
+    let paired = ph.pair(&pc.pairing_link(), "Pixel").await.unwrap();
+    let s = connect(&ph, &paired).await.unwrap();
+    assert!(s.audio_supported(), "session/3 keeps sound");
+    wait_for(|| s.files().is_some()).await;
+    assert_eq!(s.files(), Some((true, 8 << 20)));
+
+    let data: Vec<u8> = (0..3_000_000u32).map(|i| (i % 253) as u8).collect();
+    let mut up = s
+        .send_file("../photo.jpg", data.len() as u64)
+        .await
+        .unwrap();
+    for c in data.chunks(64 * 1024) {
+        up.write(c).await.unwrap();
+    }
+    assert_eq!(up.sent(), data.len() as u64);
+    assert_eq!(up.finish().await.unwrap(), "photo.jpg");
+    assert_eq!(
+        std::fs::read(pc.files_dir().join("photo.jpg")).unwrap(),
+        data
+    );
+
+    // more than announced is caught on the phone already
+    let mut up = s.send_file("x.bin", 2).await.unwrap();
+    assert!(up.write(b"abc").await.is_err());
+    up.cancel();
+
+    // cancel halfway
+    let mut up = s.send_file("half.bin", data.len() as u64).await.unwrap();
+    up.write(&data[..1_000_000]).await.unwrap();
+    up.cancel();
+    wait_for(|| pc.received() == ["photo.jpg"]).await;
+
+    // input still flows during and after
+    s.send(ClientMsg::MouseMove { dx: 1, dy: 1 }).unwrap();
+    wait_for(|| pc.input.log().iter().any(|l| l == "move 1 1")).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn phone_core_reports_file_send_off() {
+    let pc = Pc::start().await;
+    let ph = phone().await;
+    let paired = ph.pair(&pc.pairing_link(), "Pixel").await.unwrap();
+    let s = connect(&ph, &paired).await.unwrap();
+    wait_for(|| s.files().is_some()).await;
+    assert_eq!(s.files().map(|f| f.0), Some(false));
+    let e = s.send_file("a.txt", 1).await.err().expect("refused");
+    assert_eq!(e.to_string(), "file sending is off on this PC");
+    assert!(!pc.files_dir().exists());
+}

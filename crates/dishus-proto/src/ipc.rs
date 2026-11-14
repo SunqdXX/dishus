@@ -60,6 +60,8 @@ pub struct IpcStatus {
     pub devices: usize,
     pub capture_backend: String,
     pub input_backend: String,
+    /// "off", or where files from the phone go and how many came since the daemon started.
+    pub files: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

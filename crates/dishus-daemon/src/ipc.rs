@@ -29,6 +29,19 @@ pub struct IpcContext {
     pub input_backend: std::sync::Arc<std::sync::Mutex<String>>,
 }
 
+fn files_summary(st: &AppState) -> String {
+    let f = &st.config.files;
+    if !f.enabled {
+        return "off (files.enabled in config.toml)".into();
+    }
+    format!(
+        "on, up to {} MB, into {} ({} received since start)",
+        f.max_file_mb,
+        st.paths.files_dir.display(),
+        st.files_received.load(std::sync::atomic::Ordering::Relaxed)
+    )
+}
+
 #[cfg(not(windows))]
 pub async fn serve(ctx: Arc<IpcContext>) -> Result<()> {
     let path = ctx.state.paths.socket();
@@ -131,6 +144,7 @@ async fn handle(ctx: &IpcContext, req: IpcRequest) -> IpcResponse {
                 devices: st.devices.read().expect("devices").list().len(),
                 capture_backend: ctx.capture_backend.read().expect("capture desc").clone(),
                 input_backend: ctx.input_backend.lock().expect("input status").clone(),
+                files: files_summary(st),
             })
         }
         IpcRequest::List => {

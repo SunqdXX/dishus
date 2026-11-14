@@ -7,6 +7,7 @@
 //! cargo run -p dishus-core --example desktop_client -- keys 125,2   # tap Super+1
 //! cargo run -p dishus-core --example desktop_client -- mouse move:200:0,right   # move, right-click
 //! cargo run -p dishus-core --example desktop_client -- audio --seconds 10   # count PC audio packets
+//! cargo run -p dishus-core --example desktop_client -- send-file ./photo.jpg [--as NAME] [--cancel-after BYTES]
 //! ```
 //!
 //! State (identity + paired PC) is kept in `$DISHUS_CLIENT_DIR` (default
@@ -113,7 +114,7 @@ async fn main() -> Result<()> {
             v.pcs.push(pc);
             save(&v)?;
         }
-        "view" | "keys" | "mouse" | "renew" | "audio" => {
+        "view" | "keys" | "mouse" | "renew" | "audio" | "send-file" => {
             let pc = v
                 .pcs
                 .last()
@@ -199,6 +200,12 @@ async fn main() -> Result<()> {
                 s.close().await;
                 return Ok(());
             }
+            if cmd == "send-file" {
+                let path = args.get(1).context("usage: send-file <path>")?;
+                let r = send_file(&s, path, &args).await;
+                s.close().await;
+                return r;
+            }
             if cmd == "audio" {
                 let secs = arg_val(&args, "--seconds")
                     .and_then(|s| s.parse().ok())
@@ -256,10 +263,65 @@ async fn main() -> Result<()> {
             s.close().await;
         }
         _ => bail!(
-            "usage: desktop_client pair <uri> | view [--seconds N] [--fps N] [--max-height N] [--monitor N] | keys 125,2 | mouse move:200:0,right | renew [--days N]"
+            "usage: desktop_client pair <uri> | view [--seconds N] [--fps N] [--max-height N] [--monitor N] | keys 125,2 | mouse move:200:0,right | renew [--days N] | audio [--seconds N] | send-file <path> [--as NAME] [--cancel-after BYTES]"
         ),
     }
     client.close().await;
+    Ok(())
+}
+
+/// Send one file like the app does, with progress on stderr. `--cancel-after N` cancels once
+/// N bytes are out (to test that the PC cleans up).
+async fn send_file(s: &dishus_core::Session, path: &str, args: &[String]) -> Result<()> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).with_context(|| format!("opening {path}"))?;
+    let size = f.metadata()?.len();
+    let name = match arg_val(args, "--as") {
+        Some(n) => n.to_owned(),
+        None => std::path::Path::new(path)
+            .file_name()
+            .context("no file name")?
+            .to_string_lossy()
+            .into_owned(),
+    };
+    let cancel_after: Option<u64> = arg_val(args, "--cancel-after").and_then(|v| v.parse().ok());
+    // FilesInfo comes right after Welcome
+    let t = Instant::now();
+    while s.files().is_none() && t.elapsed() < Duration::from_secs(3) {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    eprintln!("PC files: {:?}", s.files());
+    let t0 = Instant::now();
+    let mut up = s.send_file(&name, size).await?;
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut last = Instant::now();
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        up.write(&buf[..n]).await?;
+        if cancel_after.is_some_and(|c| up.sent() >= c) {
+            up.cancel();
+            eprintln!("cancelled after {} bytes", up.sent());
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            return Ok(());
+        }
+        if last.elapsed() >= Duration::from_secs(1) {
+            last = Instant::now();
+            eprintln!(
+                "{:.0} %  {:.1} MB/s",
+                up.sent() as f64 * 100.0 / size.max(1) as f64,
+                up.sent() as f64 / 1e6 / t0.elapsed().as_secs_f64()
+            );
+        }
+    }
+    let saved = up.finish().await?;
+    let secs = t0.elapsed().as_secs_f64();
+    eprintln!(
+        "saved as {saved:?}: {size} bytes in {secs:.1} s ({:.1} MB/s)",
+        size as f64 / 1e6 / secs
+    );
     Ok(())
 }
 

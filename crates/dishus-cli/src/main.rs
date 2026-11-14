@@ -426,6 +426,7 @@ async fn main() -> Result<()> {
                 );
                 println!("  capture     {}", s.capture_backend);
                 println!("  input       {}", s.input_backend);
+                println!("  files       {}", s.files);
                 println!("  devices     {} paired", s.devices);
                 println!(
                     "  pairing     {}",

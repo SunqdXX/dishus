@@ -18,10 +18,12 @@ use iroh::{
 use tokio::{sync::mpsc, task::JoinHandle, time::timeout};
 
 use dishus_proto::{
-    ALPN_PAIR, ALPN_SESSION, ALPN_SESSION_V2, CAPTURE_OPEN_TIMEOUT_MS, ClientMsg, FrameError,
-    HEARTBEAT_INTERVAL_MS, MAX_CONTROL_FRAME, MAX_VIDEO_FRAME, PROTO_VERSION, PairRequest,
-    PairResponse, PairingInfo, SESSION_IDLE_TIMEOUT_MS, ServerMsg, StreamParams, VideoHeader,
-    frame::Validate, read_frame, write_frame,
+    ALPN_PAIR, CAPTURE_OPEN_TIMEOUT_MS, ClientMsg, FrameError, HEARTBEAT_INTERVAL_MS,
+    MAX_CONTROL_FRAME, MAX_VIDEO_FRAME, PROTO_VERSION, PairRequest, PairResponse, PairingInfo,
+    SESSION_ALPNS, SESSION_IDLE_TIMEOUT_MS, ServerMsg, StreamParams, VideoHeader,
+    files::{CANCELLED, FileAnswer, FileOffer, FileRefusal, FileResult, MAX_FILE_FRAME},
+    frame::Validate,
+    read_frame, session_version, write_frame,
 };
 
 use crate::vault::PairedPc;
@@ -208,12 +210,13 @@ impl Client {
     ) -> Result<Session> {
         let addr = pc_addr(&pc.endpoint_id, &pc.relays, &pc.addrs)?;
         let res = async {
-            // session/2 (audio) if the PC knows it, else session/1: the PC picks.
-            let opts = ConnectOptions::new().with_additional_alpns(vec![ALPN_SESSION.to_vec()]);
+            // The newest session version the PC knows (3: files, 2: audio, 1): the PC picks.
+            let older = SESSION_ALPNS[1..].iter().map(|a| a.to_vec()).collect();
+            let opts = ConnectOptions::new().with_additional_alpns(older);
             let conn = timeout(CONNECT_TIMEOUT, async {
                 anyhow::Ok(
                     self.endpoint
-                        .connect_with_opts(addr, ALPN_SESSION_V2, opts)
+                        .connect_with_opts(addr, SESSION_ALPNS[0], opts)
                         .await?
                         .await?,
                 )
@@ -252,6 +255,82 @@ pub struct AudioPacket {
     pub data: Bytes,
 }
 
+/// The PC refused a file; the text is meant for the user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileRefused(pub FileRefusal);
+
+impl std::fmt::Display for FileRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+impl std::error::Error for FileRefused {}
+
+/// A file the PC accepted. Dropped without [`FileUpload::finish`] it is cancelled, and the PC
+/// deletes what it got.
+pub struct FileUpload {
+    send: iroh::endpoint::SendStream,
+    recv: iroh::endpoint::RecvStream,
+    size: u64,
+    sent: u64,
+    /// Finished and confirmed: nothing to cancel on drop.
+    done: bool,
+}
+
+impl FileUpload {
+    /// Bytes handed to the connection so far (for a progress bar).
+    pub fn sent(&self) -> u64 {
+        self.sent
+    }
+
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
+    /// Send the next piece. Waits while the link is busy, so `sent` follows the real speed.
+    pub async fn write(&mut self, data: &[u8]) -> Result<()> {
+        if self.sent + data.len() as u64 > self.size {
+            bail!("more data than the size given");
+        }
+        self.send.write_all(data).await?;
+        self.sent += data.len() as u64;
+        Ok(())
+    }
+
+    /// Everything sent: wait until the PC saved it. Returns the name it used there.
+    pub async fn finish(mut self) -> Result<String> {
+        if self.sent != self.size {
+            bail!("only {} of {} bytes sent", self.sent, self.size);
+        }
+        self.send.finish()?;
+        // the PC answers after the last byte is on its disk (sync included)
+        let r: FileResult = timeout(
+            Duration::from_secs(120),
+            read_frame(&mut self.recv, MAX_FILE_FRAME),
+        )
+        .await
+        .context("the PC did not confirm the file")??;
+        self.done = true;
+        match r {
+            FileResult::Saved { name } => Ok(name),
+            FileResult::Failed => bail!("the PC could not save the file"),
+        }
+    }
+
+    /// Stop now; the PC deletes the partial file.
+    pub fn cancel(&mut self) {
+        let _ = self.send.reset(CANCELLED.into());
+    }
+}
+
+impl Drop for FileUpload {
+    fn drop(&mut self) {
+        if !self.done {
+            let _ = self.send.reset(CANCELLED.into());
+        }
+    }
+}
+
 /// Video frame delivered in order, ready for the decoder.
 #[derive(Debug, Clone)]
 pub struct VideoPacket {
@@ -267,8 +346,12 @@ pub struct Session {
     audio_rx: tokio::sync::Mutex<mpsc::Receiver<AudioPacket>>,
     rtt_ms: Arc<AtomicU64>,
     closed: Arc<AtomicBool>,
-    /// session/2 was negotiated: the PC can send audio.
+    /// session/2 or newer: the PC can send audio.
     audio_supported: bool,
+    /// session/3: the PC may take files.
+    files_supported: bool,
+    /// The PC's FilesInfo: (enabled, max bytes).
+    files: Arc<std::sync::Mutex<Option<(bool, u64)>>>,
     /// Set when the watchdog gave up on a silent PC.
     timed_out: Arc<AtomicBool>,
     tasks: Vec<JoinHandle<()>>,
@@ -351,6 +434,7 @@ impl Session {
         let last_rx = Arc::new(AtomicU64::new(0));
         // When the last video frame was delivered (ms since start + 1; 0 = none yet).
         let last_video = Arc::new(AtomicU64::new(0));
+        let files: Arc<std::sync::Mutex<Option<(bool, u64)>>> = Arc::default();
         let start = Instant::now();
 
         // Writer + heartbeat.
@@ -381,6 +465,7 @@ impl Session {
         let r_rtt = rtt_ms.clone();
         let r_closed = closed.clone();
         let r_last = last_rx.clone();
+        let r_files = files.clone();
         let reader = tokio::spawn(async move {
             loop {
                 let frame = read_frame::<_, ServerMsg>(&mut recv, MAX_CONTROL_FRAME).await;
@@ -388,6 +473,9 @@ impl Session {
                 match frame {
                     Ok(ServerMsg::Pong { t }) => {
                         r_rtt.store(mono_ms(start).saturating_sub(t), Ordering::Relaxed);
+                    }
+                    Ok(ServerMsg::FilesInfo { enabled, max_bytes }) => {
+                        *r_files.lock().expect("files") = Some((enabled, max_bytes));
                     }
                     Ok(m) => {
                         let bye = matches!(m, ServerMsg::Bye { .. });
@@ -521,8 +609,11 @@ impl Session {
             }
         });
 
+        let version = session_version(conn.alpn()).unwrap_or(1);
         Ok(Self {
-            audio_supported: conn.alpn() == ALPN_SESSION_V2,
+            audio_supported: version >= 2,
+            files_supported: version >= 3,
+            files,
             conn,
             tx,
             control_rx: tokio::sync::Mutex::new(ctl_rx),
@@ -538,6 +629,45 @@ impl Session {
     /// The PC speaks session/2 and can stream its audio.
     pub fn audio_supported(&self) -> bool {
         self.audio_supported
+    }
+
+    /// None until the PC said whether it takes files (and always None for a PC too old for
+    /// them); else (enabled, largest file in bytes).
+    pub fn files(&self) -> Option<(bool, u64)> {
+        *self.files.lock().expect("files")
+    }
+
+    /// Offer a file to the PC. Ok once the PC accepted it: then [`FileUpload::write`] exactly
+    /// `size` bytes and [`FileUpload::finish`]. A refusal is a [`FileRefusal`] error.
+    pub async fn send_file(&self, name: &str, size: u64) -> Result<FileUpload> {
+        if !self.files_supported {
+            bail!("this PC's DiShus is too old for files");
+        }
+        let offer = FileOffer {
+            name: name.to_owned(),
+            size,
+        };
+        offer.validate().map_err(|e| anyhow::anyhow!(e))?;
+        let (mut send, mut recv) = self.conn.open_bi().await?;
+        // typing and pings go first; a file only uses what is left
+        let _ = send.set_priority(-1);
+        write_frame(&mut send, &offer, MAX_FILE_FRAME).await?;
+        let answer: FileAnswer = timeout(
+            Duration::from_secs(15),
+            read_frame(&mut recv, MAX_FILE_FRAME),
+        )
+        .await
+        .context("the PC did not answer")??;
+        match answer {
+            FileAnswer::Accept => Ok(FileUpload {
+                send,
+                recv,
+                size,
+                sent: 0,
+                done: false,
+            }),
+            FileAnswer::Refuse(r) => Err(anyhow::Error::new(FileRefused(r))),
+        }
     }
 
     /// Queue a message. Validated locally first so the PC never has to drop us for garbage.
