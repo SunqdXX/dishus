@@ -1,4 +1,5 @@
-//! The capture worker process on Windows (`dishus-daemon --capture-worker <session|setup|probe>`).
+//! The capture worker process on Windows
+//! (`dishus-daemon --capture-worker <session|audio|setup|probe|dupcheck>`).
 //!
 //! Same contract as the Linux worker: stdout carries framed [`WorkerEvent`]s, stdin carries
 //! framed [`WorkerCmd`]s, logs go to stderr (the daemon points it at its log file). The worker
@@ -125,6 +126,17 @@ pub async fn run(mode: &str, opts: WorkerOptions) -> Result<()> {
             }
         },
         "session" => session(opts, out).await,
+        "audio" => {
+            let test = opts.test_source;
+            crate::capture::audio_worker::run(
+                Arc::new(move |ev: &WorkerEvent| out.send(ev)),
+                test,
+                move |kbps, on_packet, on_fail| {
+                    super::audio::start_audio(test, kbps, on_packet, on_fail)
+                },
+            )
+            .await
+        }
         other => anyhow::bail!("unknown worker mode {other}"),
     }
 }

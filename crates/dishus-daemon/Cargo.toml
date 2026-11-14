@@ -16,8 +16,9 @@ path = "src/main.rs"
 [features]
 default = ["capture", "uinput", "sendinput"]
 # Screen capture + encode. Linux: xdg-desktop-portal / PipeWire / GStreamer.
-# Windows: DXGI Desktop Duplication + Media Foundation (part of Windows, nothing to install).
-capture = ["dep:ashpd", "dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
+# Windows: DXGI Desktop Duplication + Media Foundation (part of Windows, nothing to install),
+# sound through WASAPI + libopus (built in: Windows has no Opus encoder).
+capture = ["dep:ashpd", "dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video", "dep:opus"]
 # Virtual keyboard/mouse through /dev/uinput (Linux).
 uinput = ["dep:evdev"]
 # Keyboard/mouse through SendInput (Windows; no effect elsewhere).
@@ -74,14 +75,20 @@ windows = { version = "0.62", features = [
   "Win32_Graphics_Direct3D11",
   "Win32_Media_MediaFoundation",
   "Win32_Media_DirectShow",
+  "Win32_Media_Audio",
+  "Win32_System_Com_StructuredStorage",
   "Data_Xml_Dom",
   "UI_Notifications",
 ] }
 dishus-win.workspace = true
+# libopus, compiled from source into the exe (~0.4 MB); the sound encoder on Windows.
+opus = { version = "0.4", optional = true }
 
 [dev-dependencies]
 dishus-core = { path = "../dishus-core", version = "0.31.0" }
 tempfile = "3"
+# The Windows sound encoder's framing is tested on Linux too.
+opus = "0.4"
 tokio = { workspace = true, features = ["test-util"] }
 
 [lints]

@@ -17,6 +17,11 @@ pub mod client;
 pub mod throttle;
 pub mod wire;
 
+#[cfg(feature = "capture")]
+pub mod audio_worker;
+#[cfg(any(all(feature = "capture", windows), test))]
+pub mod opus_frames;
+
 #[cfg(all(feature = "capture", not(windows)))]
 pub mod pipeline;
 #[cfg(all(feature = "capture", not(windows)))]
