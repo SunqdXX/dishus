@@ -24,6 +24,9 @@ pub struct Paths {
     pub state_dir: PathBuf,
     /// `$XDG_RUNTIME_DIR/dishus`: control socket
     pub runtime_dir: PathBuf,
+    /// `Downloads/DiShus`: files sent from the phone (only when `files.enabled`). Created with
+    /// the first file, with normal permissions: it is the user's own folder.
+    pub files_dir: PathBuf,
 }
 
 #[cfg(not(windows))]
@@ -38,6 +41,63 @@ fn env_dir(var: &str, fallback: impl FnOnce(PathBuf) -> PathBuf) -> Result<PathB
     Ok(fallback(PathBuf::from(home)))
 }
 
+/// The Downloads folder: an absolute `XDG_DOWNLOAD_DIR`, else `XDG_DOWNLOAD_DIR` in
+/// `user-dirs.dirs` (what file managers use, e.g. a translated folder name), else ~/Downloads.
+#[cfg(not(windows))]
+fn xdg_downloads(config_root: &Path) -> Result<PathBuf> {
+    if let Some(v) = std::env::var_os("XDG_DOWNLOAD_DIR").filter(|v| !v.is_empty()) {
+        let p = PathBuf::from(v);
+        if p.is_absolute() {
+            return Ok(p);
+        }
+    }
+    let home = PathBuf::from(std::env::var_os("HOME").context("HOME is not set")?);
+    let listed = fs::read_to_string(config_root.join("user-dirs.dirs"))
+        .ok()
+        .and_then(|s| parse_user_dirs(&s, &home));
+    Ok(listed.unwrap_or_else(|| home.join("Downloads")))
+}
+
+/// `XDG_DOWNLOAD_DIR="$HOME/Downloads"` from a user-dirs.dirs file.
+#[cfg(not(windows))]
+fn parse_user_dirs(file: &str, home: &Path) -> Option<PathBuf> {
+    let line = file
+        .lines()
+        .map(str::trim)
+        .find_map(|l| l.strip_prefix("XDG_DOWNLOAD_DIR="))?;
+    let v = line.trim().strip_prefix('"')?.strip_suffix('"')?;
+    let p = match v.strip_prefix("$HOME") {
+        Some(rest) => home.join(rest.trim_start_matches('/')),
+        None => PathBuf::from(v),
+    };
+    // "$HOME" alone means "no Downloads folder"; don't fill the home folder itself
+    (p.is_absolute() && p != home).then_some(p)
+}
+
+/// The user's Downloads folder (wherever they moved it), else %USERPROFILE%\Downloads.
+#[cfg(windows)]
+fn windows_downloads() -> Result<PathBuf> {
+    use windows::Win32::{
+        System::Com::CoTaskMemFree,
+        UI::Shell::{FOLDERID_Downloads, KF_FLAG_DEFAULT, SHGetKnownFolderPath},
+    };
+    // SAFETY: the returned string is read once and freed with CoTaskMemFree, as documented.
+    let known = unsafe {
+        SHGetKnownFolderPath(&FOLDERID_Downloads, KF_FLAG_DEFAULT, None)
+            .ok()
+            .and_then(|p| {
+                let s = p.to_string().ok();
+                CoTaskMemFree(Some(p.0 as *const _));
+                s
+            })
+    };
+    if let Some(p) = known.map(PathBuf::from).filter(|p| p.is_absolute()) {
+        return Ok(p);
+    }
+    let profile = std::env::var_os("USERPROFILE").context("USERPROFILE is not set")?;
+    Ok(PathBuf::from(profile).join("Downloads"))
+}
+
 impl Paths {
     #[cfg(windows)]
     pub fn from_env() -> Result<Self> {
@@ -46,6 +106,7 @@ impl Paths {
             config_dir: dishus_win::config_dir()?,
             runtime_dir: state_dir.join("run"),
             state_dir,
+            files_dir: windows_downloads()?.join("DiShus"),
         })
     }
 
@@ -57,20 +118,27 @@ impl Paths {
             Some(v) => PathBuf::from(v),
             None => bail!("XDG_RUNTIME_DIR is not set (is this a login session?)"),
         };
-        Ok(Self::with_roots(&config, &state, &runtime))
+        let downloads = xdg_downloads(&config)?;
+        Ok(Self::with_roots(&config, &state, &runtime, &downloads))
     }
 
-    pub fn with_roots(config: &Path, state: &Path, runtime: &Path) -> Self {
+    pub fn with_roots(config: &Path, state: &Path, runtime: &Path, downloads: &Path) -> Self {
         Self {
             config_dir: config.join("dishus"),
             state_dir: state.join("dishus"),
             runtime_dir: runtime.join("dishus"),
+            files_dir: downloads.join("DiShus"),
         }
     }
 
     /// Same root for everything; used by tests.
     pub fn under(root: &Path) -> Self {
-        Self::with_roots(&root.join("config"), &root.join("state"), &root.join("run"))
+        Self::with_roots(
+            &root.join("config"),
+            &root.join("state"),
+            &root.join("run"),
+            &root.join("downloads"),
+        )
     }
 
     pub fn ensure(&self) -> Result<()> {
@@ -247,6 +315,25 @@ pub fn read_private(path: &Path) -> Result<Option<Vec<u8>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(windows))]
+    #[test]
+    fn downloads_from_user_dirs() {
+        let home = Path::new("/home/u");
+        let f = "# comment\nXDG_DESKTOP_DIR=\"$HOME/Desktop\"\nXDG_DOWNLOAD_DIR=\"$HOME/İndirilenler\"\n";
+        assert_eq!(
+            parse_user_dirs(f, home),
+            Some(PathBuf::from("/home/u/İndirilenler"))
+        );
+        let abs = "XDG_DOWNLOAD_DIR=\"/data/dl\"";
+        assert_eq!(parse_user_dirs(abs, home), Some(PathBuf::from("/data/dl")));
+        assert_eq!(parse_user_dirs("XDG_DOWNLOAD_DIR=\"$HOME/\"", home), None);
+        assert_eq!(parse_user_dirs("XDG_DOWNLOAD_DIR=\"rel\"", home), None);
+        assert_eq!(parse_user_dirs("", home), None);
+        // tests never touch the real Downloads
+        let t = tempfile::tempdir().unwrap();
+        assert!(Paths::under(t.path()).files_dir.starts_with(t.path()));
+    }
 
     #[test]
     fn single_instance_lock() {

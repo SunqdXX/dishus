@@ -25,6 +25,32 @@ pub struct Config {
     /// answers peers that pass the allowlist gate. Set it only if you forward it on your router.
     pub udp_port: u16,
     pub video: VideoConfig,
+    pub files: FilesConfig,
+}
+
+/// Files sent from the phone. Off unless turned on here; restart the daemon after a change.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct FilesConfig {
+    /// Accept files from paired phones into Downloads/DiShus. Never opened by DiShus.
+    pub enabled: bool,
+    /// Largest file accepted, MB (1..=1048576).
+    pub max_file_mb: u64,
+}
+
+impl Default for FilesConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_file_mb: 2048,
+        }
+    }
+}
+
+impl FilesConfig {
+    pub fn max_bytes(&self) -> u64 {
+        self.max_file_mb << 20
+    }
 }
 
 /// Accepted `video.encoder` values.
@@ -66,6 +92,7 @@ impl Default for Config {
             pairing_ttl_secs: 60,
             udp_port: 0,
             video: VideoConfig::default(),
+            files: FilesConfig::default(),
         }
     }
 }
@@ -123,6 +150,9 @@ impl Config {
         if !(300..=200_000).contains(&self.video.max_bitrate_kbps) {
             bail!("video.max_bitrate_kbps must be within 300..=200000");
         }
+        if !(1..=1_048_576).contains(&self.files.max_file_mb) {
+            bail!("files.max_file_mb must be within 1..=1048576");
+        }
         Ok(())
     }
 
@@ -172,6 +202,16 @@ mod tests {
     #[test]
     fn defaults_valid() {
         Config::default().validate().unwrap();
+    }
+
+    #[test]
+    fn file_send_is_off_unless_turned_on() {
+        assert!(!Config::default().files.enabled);
+        let c: Config = toml::from_str("[files]\nenabled = true\n").unwrap();
+        assert!(c.files.enabled);
+        assert_eq!(c.files.max_bytes(), 2048 << 20);
+        let c: Config = toml::from_str("[files]\nmax_file_mb = 0\n").unwrap();
+        assert!(c.validate().is_err());
     }
 
     #[test]

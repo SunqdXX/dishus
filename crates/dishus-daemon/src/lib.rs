@@ -12,6 +12,7 @@ pub mod doctor;
 #[cfg(all(feature = "capture", windows))]
 #[path = "doctor_win.rs"]
 pub mod doctor;
+pub mod files;
 pub mod gate;
 pub mod identity;
 pub mod ipc;
