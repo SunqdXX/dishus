@@ -209,7 +209,15 @@ class RemoteController(
                 mods.clear(); publishMods()
             }
             if (login) {
-                _ui.value = _ui.value.copy(connected = false, fatal = true, status = loginRefusalText(reason))
+                // Dropped before the welcome with no reason: login mode ignores phones it doesn't know.
+                val known = reason.startsWith("LoginLimit:") ||
+                    reason in setOf("LoginBlocked", "NotAtLoginScreen", "Expired", "Lockdown", "Killed", "Revoked")
+                val text = when {
+                    known || reason == "Timeout" || reason == "PC not responding" -> loginRefusalText(reason)
+                    !_ui.value.connected -> loginRefusalText(null)
+                    else -> loginRefusalText("Normal") // after a login the PC just closes the link
+                }
+                _ui.value = _ui.value.copy(connected = false, fatal = true, status = text)
                 return
             }
             val fatal = reason in setOf("Revoked", "Killed", "Expired")

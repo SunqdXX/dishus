@@ -43,6 +43,10 @@ tracing-subscriber = { workspace = true }
 [[example]]
 name = "desktop_client"
 
+[[example]]
+name = "login_flow"
+required-features = ["ffi"]
+
 [[bin]]
 name = "uniffi-bindgen"
 required-features = ["bindgen-cli"]
