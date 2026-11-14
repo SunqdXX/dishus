@@ -170,8 +170,12 @@ async fn x11_screen_streams_with_the_session_cookie() {
                 encoder,
             } => started = Some((width, height, encoder)),
             WorkerEvent::Frame { keyframe, data, .. } => {
-                assert!(data.len() > 100);
-                key |= keyframe;
+                // later frames of a still screen are only a few bytes; a keyframe isn't
+                assert!(!data.is_empty());
+                if keyframe {
+                    assert!(data.len() > 100, "keyframe of {} bytes", data.len());
+                    key = true;
+                }
             }
             other => panic!("unexpected {other:?}"),
         }
