@@ -9,8 +9,8 @@ throw all changes away again.
 0.1.4: the installer, the firewall prompt, pairing, keyboard and mouse input (with the
 `desktop_client` example as the phone), Caps Lock being switched back off when a session ends,
 auto-start at login, `dishus status`, `dishus doctor`, the logs, and all of it again as a
-standard (non-admin) user, with the same PC id after a restart. A real phone hasn't been tried
-yet.
+standard (non-admin) user, with the same PC id after a restart. PC sound works (see
+[Sound](#sound)). A real phone hasn't been tried yet.
 
 ## How it works
 
@@ -143,6 +143,24 @@ Each `keys` or `mouse` call is one session. Linux key codes: 35 is H, 30 is A, 5
 Mouse moves are relative and Windows speeds them up (a move of 15 went about 37 pixels).
 A window to type into: `scripts/vm-run.sh 'C:\Windows\System32\cmd.exe' /k` shows what's typed.
 Notepad doesn't work for this: on a fresh VM it starts but never shows a window.
+
+## Sound
+
+The "clean" snapshot has no sound card. `scripts/vm-add-sound.sh` adds an Intel HD Audio card
+to the shut-off VM; its output goes nowhere, nothing reaches your speakers. `vm-reset.sh`
+removes it again (it restores the snapshot's definition), so after a reset: shut down, add,
+start.
+
+Something to play: a WAV played with `Media.SoundPlayer` from a PowerShell script run through
+`vm-run.sh` (`-ExecutionPolicy Bypass -File C:\dishus\play.ps1`; a command line passed to
+`vm-run.sh` directly didn't play). `desktop_client audio --seconds N` then reports packets per
+second (50 = full rate), payload kbit/s and missing packets. `DISHUS_TEST_SOURCE=1` (set before
+starting `dishus-daemon.exe`) sends a built-in tone without any sound card.
+
+Measured 2026-11-14 (branch windows-sound): a continuous 40 s tone, 50.0 packets/s, 0
+missing; the built-in tone, 49.9/s, 0 missing; nothing playing, about 3 packets/s; Windows
+accepted the 48 kHz stereo conversion. Not tested: the sound card going away (Disable-PnpDevice
+failed in the VM), a real phone.
 
 ## Known limits
 

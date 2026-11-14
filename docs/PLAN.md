@@ -94,7 +94,7 @@ toggles by adb were clean. Fix (b48695b): the PC counts packets per second from 
 log a warning with the timestamp jumps. Packet numbers carry on. e2e test with a capture slowed
 to 30/s (fails without the fix). Not yet installed on the owner's PC, so not proven in real use.
 
-### Windows sound (89f8828, local, NOT COMPILED for Windows yet)
+### Windows sound (branch windows-sound, pushed 2026-11-14 with the owner's OK; not in main)
 
 The Windows worker has an "audio" mode: WASAPI loopback of the default output, converted by
 Windows to 48 kHz 16-bit stereo (fallback: the device's 48 kHz float mix format), 20 ms
@@ -102,12 +102,15 @@ frames, libopus from the `opus` crate (built from source; Windows has no Opus en
 0.4 MB, BSD-3). A changed or removed default output restarts the capture on the new default.
 The restart loop is now shared by Linux and Windows (capture/audio_worker.rs); the Linux worker
 was rerun on it (test tone, 2 forced restarts, clean exit). The PCM framing is unit-tested on
-Linux. Blocked: this PC has no Windows Rust target and CI only runs on push, so the WASAPI code
-has never been compiled. Next: CI build (needs the owner's OK to push a branch), then the VM
-with the test tone (`DISHUS_TEST_SOURCE=1`, no VM change needed) or a VM sound device (owner's
-OK needed), then a real Windows PC and phone (the owner's friend). Known gap: on Windows the
-audio and video timestamps use different clocks, so the phone's av_offset log is meaningless
-there (playback is not affected).
+Linux. CI on the branch: all four jobs green on the first try (Windows build, clippy, tests).
+In the Windows VM (with a virtual sound card, `scripts/vm-add-sound.sh`), `desktop_client` as
+the phone: a continuous tone played in Windows arrived at 50.0 packets/s, 0 missing, 53 kbit/s;
+the built-in test tone 49.9/s, 0 missing; nothing playing about 3 packets/s. Windows accepted
+the 48 kHz stereo conversion, so the float fallback is untested. Not tested: the output device
+going away or the default changing (Windows refused to disable the VM's card), a real phone,
+real hardware. Next: the owner's friend on a real Windows PC with a phone. Known gap: on
+Windows the audio and video timestamps use different clocks, so the phone's av_offset log is
+meaningless there (playback is not affected).
 
 ## Next (none started; each needs the owner's go)
 
