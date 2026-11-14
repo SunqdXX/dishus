@@ -140,7 +140,7 @@ untested.
 14. **Zero-copy DMA-BUF capture is not implemented yet.** PipeWire is forced to SHM buffers; one
     memcpy per frame. A DMA-BUF → CUDA import path is future work.
 
-## Login-screen mode: PC side built (branch `login-mode`, 2026-11-14; not installed anywhere)
+## Login-screen mode: built (branch `login-mode`, 2026-11-14; not installed anywhere)
 
 The study and the rules are in the "Login-screen mode" plan on branch `file-send`. Built here:
 
@@ -174,15 +174,31 @@ with the wrapper missing, failing, not executable, xhost missing, stock Xsetup h
 service crash-looping. Install → uninstall leaves the system as before (file list, users, uinput
 ACL including an existing owner entry); a failed install rolls itself back.
 
+Added after the owner's answers (2026-11-14):
+
+- **The app adds a login screen from a code.** `dishus boot allow [--days N]`, run as the owner
+  inside a session, opens a 60 s one-time window in the owner's own DiShus and shows a QR code /
+  `dishus://login?` link. The app makes a new identity just for that login screen (not the
+  phone's normal one), registers it in that window, and `dishus boot allow` then asks for sudo
+  and allows exactly that identity. The app lists it under "Login screens".
+- **App lock every time.** Connect on a login screen asks for the fingerprint (or the app
+  password) each time. The session never reconnects by itself, ends when the app goes to the
+  background, and a recreated screen goes back home.
+- **Counting.** A session counts toward the hourly limit and the no-login block only once a key
+  was typed. Connections that drop before any key are free. Not done: merging reconnects within
+  60 s, because that would let a phone type a password roughly once a minute with no limit.
+- **Refusals say why.** Close codes: limit (with seconds to wait), blocked, not at the login
+  screen. Only phones that are allowed get a reason; unknown ones are dropped silently. The app
+  shows e.g. "Try again in 23 min (at 18:40)"; no answer means "off, PC asleep, or not allowed".
+- Tests: e2e for the 3-minute cap (short rule), the 5-strike block, a login clearing it,
+  untyped sessions being free, the retry time, enrollment not pairing anything; a CLI test for
+  `dishus boot allow` as the owner with a fake sudo. In the VM through the app's own FFI calls
+  (`examples/login_flow`): enroll + sudo allow, typed "test" + Enter logged in, the 4th typed
+  try in an hour refused with its retry time, and the real 3-minute cap with its notice.
+
 Not done / not tested:
-- **The phone app can't reach it yet.** Login mode has its own PC id and no pairing, so the app
-  needs a way to add it (decision for the owner) and must require the app lock for it.
-- The phone is told only "refused" when a limit hits, not why or until when. Every reconnect
-  counts as a session, so a flaky mobile link can use up the 3 an hour; from outside the house
-  only waiting helps.
-- Not tried end to end: the 3-minute cap, the 5-strike block (unit tests only), the owner's
-  `dishus boot allow <phone>` path that looks the phone up and asks for sudo.
-- Not tried on the real PC,
-  nor with a real phone. Encoding there would be x264 on the CPU (the sandbox allows no GPU).
+- Not tried with the real phone yet (APK built and signed, not installed), nor on the real PC.
+  On a PC with a GPU, encoding there would still be x264 on the CPU (the sandbox allows no GPU).
+- The 5-strike block in the VM: the hourly limit (3) stops a phone first; covered by e2e only.
 - Wayland greeters (and SDDM's DisplayServer=wayland / x11-user) are refused by install.sh.
 - The Windows build of this branch was not compiled (no CI run; nothing pushed).
