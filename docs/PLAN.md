@@ -150,19 +150,26 @@ The study and the rules are in the "Login-screen mode" plan on branch `file-send
   back the X access. No picture, no typing: without capture the session ends with a notice;
   presses are dropped unless a frame went out in the last second (releases always pass).
   Limits: 3 min a session, 3 sessions an hour, blocked after 5 sessions a day with no login
-  (persisted); `sudo dishus boot allow` again clears them. History in /run/dishus-boot/history.
+  (persisted); `sudo dishus boot allow` again clears them. Only that extends an allowance: a
+  phone can't renew itself there. History in /run/dishus-boot/history. The virtual keyboard is
+  made when the login screen appears (made on the first key, X lost the first letter).
 - Control socket /run/dishus-boot/control.sock: root may do everything; the owner (uid in the
   unit) may status/list/revoke/kill/unlock; anyone else is refused. CLI: `dishus boot
-  status|list|allow|revoke|kill|unlock`; `dishus revoke` and `dishus kill` also reach it.
+  status|list|allow|revoke|kill|unlock`; `dishus revoke` and `dishus kill` always try it too
+  and warn when it is installed but not running.
 - `packaging/boot-mode/`: unit (sandboxed; /dev/uinput its only device; no ordering against
   the display manager), sysusers, udev ACL rule (uinput only), SDDM drop-in + `sddm-xsetup`
-  wrapper (stock Xsetup, then `xhost +SI:localuser:dishus-boot`, always exit 0, 30 s cap),
+  wrapper (stock Xsetup, then `xhost +SI:localuser:dishus-boot` only while the service is
+  enabled, always exit 0, 30 s cap; the daemon takes the access back from any user X11 session),
   `install.sh` (checks first, rolls back on error, never restarts SDDM), `uninstall.sh`.
 
 Tested in the Arch + SDDM 0.21 X11 VM (`scripts/linux-vm/`): the greeter streamed (x264,
 1280x800); "test" + Enter typed from desktop_client logged in (three times); after login
-dishus-boot can't open the user's X display and the phone is refused; after logout login mode
-works again; the hourly limit refused a 4th session. Fail-safe: the login screen still showed
+dishus-boot can't open the user's X display (also after a restart mid-session) and the phone is
+refused; after logout login mode works again; the hourly limit refused a 4th session; switched
+off, it gets no X access; the uinput ACL survives `udevadm trigger`; another user is refused on
+the control socket; `dishus revoke` reached it. Ending a session with `loginctl
+terminate-session` leaves SDDM without a greeter, with or without login mode (stock behaviour). Fail-safe: the login screen still showed
 with the wrapper missing, failing, not executable, xhost missing, stock Xsetup hanging, and the
 service crash-looping. Install → uninstall leaves the system as before (file list, users, uinput
 ACL including an existing owner entry); a failed install rolls itself back.
@@ -170,7 +177,11 @@ ACL including an existing owner entry); a failed install rolls itself back.
 Not done / not tested:
 - **The phone app can't reach it yet.** Login mode has its own PC id and no pairing, so the app
   needs a way to add it (decision for the owner) and must require the app lock for it.
-- The phone is told only "refused" when a limit hits, not why or until when.
+- The phone is told only "refused" when a limit hits, not why or until when. Every reconnect
+  counts as a session, so a flaky mobile link can use up the 3 an hour; from outside the house
+  only waiting helps.
+- Not tried end to end: the 3-minute cap, the 5-strike block (unit tests only), the owner's
+  `dishus boot allow <phone>` path that looks the phone up and asks for sudo.
 - Not tried on the real PC,
   nor with a real phone. Encoding there would be x264 on the CPU (the sandbox allows no GPU).
 - Wayland greeters (and SDDM's DisplayServer=wayland / x11-user) are refused by install.sh.
