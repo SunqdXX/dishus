@@ -16,7 +16,7 @@ forwarding. Free and open source.
 | | Status |
 |---|---|
 | Linux, Hyprland (Wayland) | tested by us: picture, keyboard, mouse, sound |
-| Linux, X11 (XFCE) | picture tested by us on XFCE (keyboard and mouse there not checked); **in main, not in a release yet**: the 0.31 download can fail to stream on X11 |
+| Linux, X11 (XFCE) | picture tested by us on XFCE (keyboard and mouse there not checked); **needs 0.32 or newer**: 0.31 can fail to stream on X11 |
 | Linux, KDE Plasma | reported working by friends |
 | Windows (the exe) | tested by a friend on their PC; in our VM: install, pairing, keyboard, mouse (no video in the VM, no real phone); no sound |
 | Android | needs Android 9 or newer; tested on Samsung Galaxy phones with Android 16, older versions untested |

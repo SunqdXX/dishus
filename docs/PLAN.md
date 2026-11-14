@@ -18,6 +18,8 @@ Released: 0.1.0 to 0.1.4 (Linux, Android; Windows since 0.1.3). 0.1.4 turns Caps
 Lock back off when a phone session ends.
 0.31 (2026-11-14): PC sound on the phone (Linux PCs), steadier stream on weak links, phone
 screen height as the default resolution. Versions from now on: 0.31, 0.69, 1.31, 1.69, ...
+0.32 (2026-11-15, the owner's choice of number): X11/XFCE capture fix, sound capture restart
+when it delivers too few packets, `install.sh` restarts the service on update, README rewrite.
 
 Tested on Windows in the VM with 0.1.4: install, firewall prompt, pairing, keyboard, mouse,
 Caps Lock undo, auto-start, `status`, `doctor`, and a standard (non-admin) user keeping the same
@@ -97,7 +99,7 @@ to 30/s (fails without the fix). In real use on the owner's PC the warning fired
 packets ... restarting it"), which confirms the PC capture as the cause, but it came back about
 20 s after each restart: the restart is a workaround, the cause inside the capture is still open.
 
-## X11 / XFCE capture fix (2026-11-14; merged into main, not released yet)
+## X11 / XFCE capture fix (2026-11-14; released in 0.32)
 
 Bug: on an X11 session (XFCE under SDDM) every stream failed with "Element failed to change
 its state". Causes and fixes:
