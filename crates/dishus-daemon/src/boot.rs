@@ -336,6 +336,8 @@ pub async fn watch_seat(state: Arc<AppState>) {
     };
     let mut conn = None;
     let mut was_user = false;
+    // The user X display we last gave our access back on (once per session, not every second).
+    let mut cleared: Option<String> = None;
     loop {
         if conn.is_none() {
             conn = zbus::Connection::system()
@@ -343,18 +345,26 @@ pub async fn watch_seat(state: Arc<AppState>) {
                 .map_err(|e| tracing::warn!("login mode: no system bus: {e}"))
                 .ok();
         }
-        let (seat, user) = match &conn {
+        let (seat, user_display) = match &conn {
             Some(c) => read_seat(c).await.unwrap_or_else(|e| {
                 tracing::debug!("login mode: logind: {e:#}");
-                (Seat::Other, false)
+                (Seat::Other, None)
             }),
-            None => (Seat::Other, false),
+            None => (Seat::Other, None),
         };
+        let user = user_display.is_some();
         let before = boot.greeter_display();
         if boot.set_seat(seat.clone()) {
             tracing::info!("login mode: seat0 now {seat:?}");
             if let Some(d) = before {
                 drop_x_access(&d).await;
+            }
+            cleared = None;
+            if seat != Seat::Other {
+                // Make the virtual keyboard now: X needs a moment to pick up a new device, and
+                // keys sent before that are lost (seen in the VM: the first letter of the
+                // password went missing when the device was made on the first key).
+                state.input.lock().expect("input lock").ready();
             }
             if seat == Seat::Other {
                 let n = state.end_all_sessions(dishus_proto::ByeReason::Normal);
@@ -363,6 +373,13 @@ pub async fn watch_seat(state: Arc<AppState>) {
                 }
                 state.input.lock().expect("input lock").close_device();
             }
+        }
+        // Also after a restart in the middle of a user's X11 session: never keep access to it.
+        if let Some(d) = user_display.filter(|d| !d.is_empty())
+            && cleared.as_deref() != Some(d.as_str())
+        {
+            drop_x_access(&d).await;
+            cleared = Some(d);
         }
         if user && !was_user {
             boot.logged_in();
@@ -392,9 +409,9 @@ async fn drop_x_access(disp: &str) {
     }
 }
 
-/// (seat, is a user session active)
+/// (seat, the active user session's X display: Some("") = a user session without X)
 #[cfg(not(windows))]
-async fn read_seat(c: &zbus::Connection) -> Result<(Seat, bool)> {
+async fn read_seat(c: &zbus::Connection) -> Result<(Seat, Option<String>)> {
     use zbus::OwnedObjectPath;
     let seat = zbus::Proxy::new(
         c,
@@ -405,7 +422,7 @@ async fn read_seat(c: &zbus::Connection) -> Result<(Seat, bool)> {
     .await?;
     let (_, path): (String, OwnedObjectPath) = seat.get_property("ActiveSession").await?;
     if path.as_str() == "/" {
-        return Ok((Seat::Other, false));
+        return Ok((Seat::Other, None));
     }
     let s = zbus::Proxy::new(
         c,
@@ -416,7 +433,14 @@ async fn read_seat(c: &zbus::Connection) -> Result<(Seat, bool)> {
     .await?;
     let class: String = s.get_property("Class").await?;
     let display: String = s.get_property("Display").await?;
-    Ok((seat_from(Some(&class), Some(&display)), class == "user"))
+    let user_display = (class == "user").then(|| {
+        if valid_display(&display) {
+            display.clone()
+        } else {
+            String::new() // a user session without X (Wayland, console)
+        }
+    });
+    Ok((seat_from(Some(&class), Some(&display)), user_display))
 }
 
 #[cfg(test)]

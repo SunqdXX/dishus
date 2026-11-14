@@ -56,7 +56,12 @@ done
 [ -f "$XSETUP" ] || echo "note: no /usr/share/sddm/scripts/Xsetup (fine, nothing to chain)"
 
 # ---- install; on any error, undo what was done ----
-trap 'echo "install.sh: failed; undoing" >&2; "$here/uninstall.sh" --quiet; exit 1' EXIT
+if [ -e /etc/systemd/system/dishus-boot.service ] || [ -e "$LIB" ]; then
+    # A reinstall: never undo it, that would delete the allowed phones and the key.
+    trap 'echo "install.sh: failed partway; allowed phones kept. Fix it and run install.sh again, or uninstall.sh" >&2; exit 1' EXIT
+else
+    trap 'echo "install.sh: failed; undoing" >&2; "$here/uninstall.sh" --quiet; exit 1' EXIT
+fi
 install -d -m 755 "$LIB"
 install -m 755 "$daemon" "$LIB/dishus-daemon"
 install -m 755 "$here/sddm-xsetup" "$LIB/sddm-xsetup"

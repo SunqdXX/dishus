@@ -7,7 +7,9 @@ orig=/usr/share/sddm/scripts/Xsetup
 if [ -f "$orig" ]; then
     timeout 30 sh "$orig"
 fi
-if command -v xhost >/dev/null 2>&1; then
+# Only while login mode is switched on (systemctl disable dishus-boot = no access granted).
+if timeout 5 systemctl is-enabled --quiet dishus-boot.service 2>/dev/null &&
+    command -v xhost >/dev/null 2>&1; then
     timeout 5 xhost +SI:localuser:dishus-boot >/dev/null 2>&1
 fi
 exit 0
