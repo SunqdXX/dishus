@@ -112,7 +112,7 @@ impl WorkerProvider {
 
     /// Run a one-shot worker mode (`setup`, `probe`) and return its Info line.
     async fn one_shot(&self, mode: &str) -> Result<String> {
-        let mut child = self.spawn(mode)?;
+        let mut child = self.spawn_with(mode, session_x11().await.as_ref())?;
         let mut out = child.stdout.take().context("worker stdout")?;
         let ev: WorkerEvent = read_frame(&mut out, MAX_WORKER_FRAME)
             .await
