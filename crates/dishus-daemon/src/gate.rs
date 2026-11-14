@@ -40,7 +40,7 @@ fn is_session(alpn: &[u8]) -> bool {
 /// Pure decision used by the hook (also unit-tested).
 pub fn admit(state: &AppState, alpn: &[u8], peer: &iroh::EndpointId) -> bool {
     if is_session(alpn) {
-        state.is_session_allowed(peer)
+        state.is_session_allowed(peer) && state.boot.as_ref().is_none_or(|b| b.may_start(peer))
     } else if alpn == ALPN_PAIR {
         state.is_pairing_open()
     } else {

@@ -176,13 +176,18 @@ pub async fn spawn_router(
     opts: &NetOptions,
 ) -> Result<Router> {
     let ep = bind_endpoint(secret_key, opts, Some(Gate(state.clone()))).await?;
-    Ok(Router::builder(ep)
+    let login_mode = state.boot.is_some();
+    let b = Router::builder(ep)
         .incoming_filter(incoming_filter(state.clone()))
         // Preferred first: a phone that offers both gets session/2 (audio).
         .accept(ALPN_SESSION_V2, SessionHandler(state.clone()))
-        .accept(ALPN_SESSION, SessionHandler(state.clone()))
-        .accept(ALPN_PAIR, PairHandler(state))
-        .spawn())
+        .accept(ALPN_SESSION, SessionHandler(state.clone()));
+    // Login mode has no pairing at all, not even a closed window.
+    Ok(if login_mode {
+        b.spawn()
+    } else {
+        b.accept(ALPN_PAIR, PairHandler(state)).spawn()
+    })
 }
 
 /// Build the pairing link for the QR code.

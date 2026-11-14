@@ -81,6 +81,13 @@ impl WorkerProvider {
         })
     }
 
+    /// Same worker with one more environment variable (login mode: DISPLAY, X11 only).
+    pub fn with_env(mut self, k: &str, v: &str) -> Self {
+        self.env.retain(|(key, _)| key != k);
+        self.env.push((k.into(), v.into()));
+        self
+    }
+
     fn spawn(&self, mode: &str) -> Result<Child> {
         let mut c = Command::new(&self.exe);
         c.arg("--capture-worker")

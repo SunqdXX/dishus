@@ -38,18 +38,27 @@ pub async fn serve(ctx: Arc<IpcContext>) -> Result<()> {
     }
     let listener =
         UnixListener::bind(&path).with_context(|| format!("binding {}", path.display()))?;
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    let login_mode = ctx.state.boot.is_some();
+    // Login mode runs as its own user: root and the PC's owner must reach it. Who may do
+    // what is checked per request (`authorized`).
+    let mode = if login_mode { 0o666 } else { 0o600 };
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))?;
     let my_uid = rustix::process::getuid().as_raw();
+    let owner = ctx.state.boot.as_ref().and_then(|b| b.owner_uid);
     loop {
         let (stream, _) = listener.accept().await?;
-        match stream.peer_cred() {
-            Ok(c) if c.uid() == my_uid => {}
-            other => {
-                tracing::warn!("rejected control-socket client: {other:?}");
-                continue;
+        let caller = match stream.peer_cred() {
+            Ok(c) => classify(c.uid(), my_uid, login_mode, owner),
+            Err(e) => {
+                tracing::warn!("control socket: no peer credentials: {e}");
+                None
             }
-        }
-        spawn_client(ctx.clone(), stream);
+        };
+        let Some(caller) = caller else {
+            tracing::warn!("rejected control-socket client: {:?}", stream.peer_cred());
+            continue;
+        };
+        spawn_client(ctx.clone(), stream, caller);
     }
 }
 
@@ -74,11 +83,52 @@ pub async fn serve(ctx: Arc<IpcContext>) -> Result<()> {
                 continue;
             }
         }
-        spawn_client(ctx.clone(), stream);
+        spawn_client(ctx.clone(), stream, Caller::Same);
     }
 }
 
-fn spawn_client<S>(ctx: Arc<IpcContext>, mut stream: S)
+/// Who is on the other end of the control socket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Caller {
+    /// The daemon's own user (the only caller outside login mode).
+    Same,
+    /// Login mode: root (sudo).
+    Root,
+    /// Login mode: the PC's owner, without sudo.
+    Owner,
+}
+
+/// Map a peer uid to a caller; None = refused.
+pub fn classify(uid: u32, my_uid: u32, login_mode: bool, owner: Option<u32>) -> Option<Caller> {
+    if uid == my_uid {
+        Some(Caller::Same)
+    } else if !login_mode {
+        None
+    } else if uid == 0 {
+        Some(Caller::Root)
+    } else if Some(uid) == owner {
+        Some(Caller::Owner)
+    } else {
+        None
+    }
+}
+
+/// Login mode: the owner may look, revoke, kill and unlock, never add or renew a phone.
+pub fn authorized(caller: Caller, req: &IpcRequest) -> bool {
+    match caller {
+        Caller::Same | Caller::Root => true,
+        Caller::Owner => matches!(
+            req,
+            IpcRequest::Status
+                | IpcRequest::List
+                | IpcRequest::Revoke { .. }
+                | IpcRequest::Kill
+                | IpcRequest::Unlock
+        ),
+    }
+}
+
+fn spawn_client<S>(ctx: Arc<IpcContext>, mut stream: S, caller: Caller)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -89,7 +139,12 @@ where
                 read_frame(&mut stream, MAX_IPC_FRAME),
             )
             .await??;
-            let resp = handle(&ctx, req).await;
+            let resp = if authorized(caller, &req) {
+                handle(&ctx, req).await
+            } else {
+                tracing::warn!("control socket: {caller:?} may not {req:?}");
+                IpcResponse::Error("not allowed: run it with sudo".into())
+            };
             write_frame(&mut stream, &resp, MAX_IPC_FRAME).await?;
             Ok(())
         }
@@ -196,5 +251,62 @@ async fn handle(ctx: &IpcContext, req: IpcRequest) -> IpcResponse {
             Ok(s) => IpcResponse::Ok(s),
             Err(e) => err(format!("{e:#}")),
         },
+        IpcRequest::Allow { id, name, days } => {
+            let Ok(peer) = id.parse::<iroh::EndpointId>() else {
+                return err("not a phone id (see `dishus list` in your session)");
+            };
+            match st.allow_device(&peer, &name, days) {
+                Ok(exp) => {
+                    IpcResponse::Ok(format!("{name} may use the login screen until unix {exp}"))
+                }
+                Err(e) => err(format!("{e:#}")),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod caller_tests {
+    use super::*;
+
+    #[test]
+    fn who_may_do_what() {
+        // normal daemon: only its own user
+        assert_eq!(classify(1000, 1000, false, None), Some(Caller::Same));
+        assert_eq!(classify(0, 1000, false, None), None);
+        // login mode (runs as 970): root, the owner, nobody else
+        assert_eq!(classify(0, 970, true, Some(1000)), Some(Caller::Root));
+        assert_eq!(classify(1000, 970, true, Some(1000)), Some(Caller::Owner));
+        assert_eq!(classify(1001, 970, true, Some(1000)), None);
+        assert_eq!(classify(1000, 970, true, None), None);
+        let allow = IpcRequest::Allow {
+            id: "x".into(),
+            name: "p".into(),
+            days: 30,
+        };
+        assert!(authorized(Caller::Root, &allow));
+        assert!(!authorized(Caller::Owner, &allow));
+        assert!(!authorized(
+            Caller::Owner,
+            &IpcRequest::Renew {
+                selector: "p".into(),
+                days: 30
+            }
+        ));
+        assert!(!authorized(Caller::Owner, &IpcRequest::Pair));
+        for ok in [
+            IpcRequest::Status,
+            IpcRequest::List,
+            IpcRequest::Kill,
+            IpcRequest::Unlock,
+        ] {
+            assert!(authorized(Caller::Owner, &ok));
+        }
+        assert!(authorized(
+            Caller::Owner,
+            &IpcRequest::Revoke {
+                selector: "p".into()
+            }
+        ));
     }
 }

@@ -27,6 +27,12 @@ pub enum IpcRequest {
     Unlock,
     /// Run the screen-capture permission dialog now (user is at the PC).
     SetupCapture,
+    /// Login mode only, root only: allow this phone (hex id) at the login screen.
+    Allow {
+        id: String,
+        name: String,
+        days: u16,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,6 +84,9 @@ impl Validate for IpcRequest {
                 if selector.is_empty() || selector.len() > 128 =>
             {
                 Err("bad selector")
+            }
+            IpcRequest::Allow { id, name, .. } if id.len() > 128 || !crate::valid_name(name) => {
+                Err("bad phone")
             }
             _ => Ok(()),
         }

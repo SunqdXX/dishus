@@ -68,6 +68,26 @@ impl Paths {
         }
     }
 
+    /// Login mode, under systemd: everything private in `$STATE_DIRECTORY`
+    /// (/var/lib/dishus-boot), the control socket in `$RUNTIME_DIRECTORY` (/run/dishus-boot).
+    pub fn boot_from_env() -> Result<Self> {
+        let get = |v: &str| -> Result<PathBuf> {
+            let p = PathBuf::from(std::env::var_os(v).with_context(|| {
+                format!("{v} is not set (run login mode from its systemd unit)")
+            })?);
+            if !p.is_absolute() {
+                bail!("{v} must be absolute");
+            }
+            Ok(p)
+        };
+        let state = get("STATE_DIRECTORY")?;
+        Ok(Self {
+            config_dir: state.clone(),
+            state_dir: state,
+            runtime_dir: get("RUNTIME_DIRECTORY")?,
+        })
+    }
+
     /// Same root for everything; used by tests.
     pub fn under(root: &Path) -> Self {
         Self::with_roots(&root.join("config"), &root.join("state"), &root.join("run"))

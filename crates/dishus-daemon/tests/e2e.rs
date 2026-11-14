@@ -16,6 +16,7 @@ use dishus_daemon::{
         AudioControl, AudioPacket, AudioStream, BoxFut, BoxFuture, CaptureProvider, CaptureSession,
         EncodedStream, InputSink, StreamConfig, StreamControl, TrackedInput, VideoFrame,
     },
+    boot::{BootState, Seat},
     config::Config,
     devices::DeviceStore,
     net::{NetOptions, spawn_router},
@@ -78,7 +79,7 @@ impl StreamControl for FakeCtl {
 }
 
 /// `stall_after`: the fake encoder stops producing frames after this many, until a keyframe is
-/// forced (models the lost-keyframe-request freeze).
+/// forced (models the lost-keyframe-request freeze). `Some(0)`: one keyframe, then frozen.
 struct FakeCaptureSession {
     stall_after: Option<u64>,
 }
@@ -110,6 +111,9 @@ fn fake_stream(stall_after: Option<u64>) -> anyhow::Result<EncodedStream> {
             loop {
                 tokio::time::sleep(Duration::from_millis(15)).await;
                 n += 1;
+                if stall_after == Some(0) && n > 1 {
+                    continue; // frozen for good: one keyframe, then nothing, whatever is asked
+                }
                 if stall_after.is_some_and(|s| n > s) && !c2.key.load(Ordering::SeqCst) {
                     continue; // stuck until someone asks for a keyframe
                 }
@@ -196,6 +200,17 @@ impl CaptureProvider for FakeCapture {
     }
 }
 
+/// The login screen can't be captured (no X access, no display).
+struct NoCapture;
+impl CaptureProvider for NoCapture {
+    fn open(&self) -> BoxFuture<anyhow::Result<Box<dyn CaptureSession>>> {
+        Box::pin(async { Err(anyhow::anyhow!("cannot open display")) })
+    }
+    fn setup_interactive(&self) -> BoxFuture<anyhow::Result<String>> {
+        Box::pin(async { Err(anyhow::anyhow!("no")) })
+    }
+}
+
 // ---------- harness ----------
 
 struct Pc {
@@ -244,6 +259,59 @@ impl Pc {
             router,
             input,
         }
+    }
+
+    /// Login mode at the login screen, with `phone` allowed (`stall_after` as in
+    /// [`FakeCaptureSession`]; `fail_capture`: no picture at all).
+    async fn start_boot(stall_after: Option<u64>, fail_capture: bool, phone: &Client) -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        paths.ensure().unwrap();
+        let boot =
+            Arc::new(BootState::new(dir.path().join("limits.toml"), Some(1000), None).unwrap());
+        boot.set_seat(Seat::Greeter {
+            display: ":0".into(),
+        });
+        let input = RecInput::default();
+        let capture: Arc<dyn CaptureProvider> = if fail_capture {
+            Arc::new(NoCapture)
+        } else {
+            Arc::new(FakeCapture(Duration::ZERO, stall_after))
+        };
+        let state = Arc::new(
+            AppState::new(
+                paths,
+                Config {
+                    pc_name: "test-pc".into(),
+                    ..Default::default()
+                },
+                DeviceStore::default(),
+                TrackedInput::new(Box::new(input.clone())),
+                capture,
+                Notifier::disabled(),
+            )
+            .with_boot(boot),
+        );
+        state
+            .allow_device(&phone.endpoint_id(), "phone", 90)
+            .unwrap();
+        let router = spawn_router(
+            state.clone(),
+            SecretKey::generate(),
+            &NetOptions::local_test(),
+        )
+        .await
+        .unwrap();
+        Pc {
+            _dir: dir,
+            state,
+            router,
+            input,
+        }
+    }
+
+    fn boot(&self) -> &BootState {
+        self.state.boot.as_deref().unwrap()
     }
 
     fn pairing_link(&self) -> PairingInfo {
@@ -939,5 +1007,180 @@ async fn audio_on_sends_numbered_datagrams_and_off_stops_them() {
             .await
             .is_err(),
         "audio still flowing after SetAudio off"
+    );
+}
+
+// ---------- login-screen mode ----------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn login_mode_never_pairs() {
+    let ph = phone().await;
+    let pc = Pc::start_boot(None, false, &ph).await;
+    assert!(!pc.state.is_pairing_open());
+    assert!(pc.state.open_pairing().is_err(), "pairing must not open");
+    // Even a phone holding a (made-up) link gets nowhere: the pairing protocol isn't served.
+    let stranger = phone().await;
+    let link = PairingInfo {
+        endpoint_id: *pc.router.endpoint().id().as_bytes(),
+        token: [7; 32],
+        pc_name: "test-pc".into(),
+        relays: vec![],
+        addrs: pc
+            .router
+            .endpoint()
+            .bound_sockets()
+            .iter()
+            .map(|a| a.to_string())
+            .collect(),
+    };
+    assert!(stranger.pair(&link, "x").await.is_err());
+    assert!(pc.state.device(&stranger.endpoint_id()).is_none());
+    // and a stranger can't open a session
+    assert!(connect(&stranger, &pc.as_paired()).await.is_err());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn login_mode_types_with_a_live_picture() {
+    let ph = phone().await;
+    let pc = Pc::start_boot(None, false, &ph).await;
+    let s = connect(&ph, &pc.as_paired()).await.unwrap();
+    timeout(Duration::from_secs(5), s.next_video())
+        .await
+        .unwrap()
+        .unwrap();
+    s.send(ClientMsg::Key {
+        code: 20,
+        down: true,
+    })
+    .unwrap();
+    s.send(ClientMsg::Key {
+        code: 20,
+        down: false,
+    })
+    .unwrap();
+    wait_for(|| pc.input.log().contains(&"key 20 up".to_string())).await;
+}
+
+/// Owner's rule: a password is never typed unseen.
+#[tokio::test(flavor = "multi_thread")]
+async fn login_mode_without_a_picture_types_nothing() {
+    let ph = phone().await;
+    let pc = Pc::start_boot(None, true, &ph).await;
+    let s = ph
+        .connect(&pc.as_paired(), "phone", StreamParams::default())
+        .await
+        .unwrap();
+    let mut saw_notice = false;
+    loop {
+        match timeout(Duration::from_secs(5), s.next_control())
+            .await
+            .unwrap()
+        {
+            Some(ServerMsg::Notice { message, .. }) => {
+                saw_notice |= message.contains("won't type");
+            }
+            Some(ServerMsg::Welcome { .. }) => panic!("login mode went on without a picture"),
+            Some(ServerMsg::Bye { .. }) | None => break,
+            Some(_) => {}
+        }
+    }
+    assert!(saw_notice);
+    let _ = s.send(ClientMsg::Key {
+        code: 20,
+        down: true,
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(pc.input.log().is_empty(), "{:?}", pc.input.log());
+}
+
+/// The picture froze (one frame, then nothing): input stops a second later.
+#[tokio::test(flavor = "multi_thread")]
+async fn login_mode_drops_input_when_the_picture_freezes() {
+    let ph = phone().await;
+    let pc = Pc::start_boot(Some(0), false, &ph).await;
+    let s = connect(&ph, &pc.as_paired()).await.unwrap();
+    timeout(Duration::from_secs(5), s.next_video())
+        .await
+        .unwrap()
+        .unwrap();
+    s.send(ClientMsg::Key {
+        code: 20,
+        down: true,
+    })
+    .unwrap();
+    s.send(ClientMsg::Key {
+        code: 20,
+        down: false,
+    })
+    .unwrap();
+    wait_for(|| pc.input.log().contains(&"key 20 up".to_string())).await;
+    tokio::time::sleep(dishus_daemon::boot::VIDEO_FRESH + Duration::from_millis(500)).await;
+    s.send(ClientMsg::Key {
+        code: 30,
+        down: true,
+    })
+    .unwrap();
+    s.send(ClientMsg::MouseMove { dx: 5, dy: 5 }).unwrap();
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let log = pc.input.log();
+    assert!(
+        !log.iter()
+            .any(|l| l.starts_with("key 30") || l.starts_with("move")),
+        "{log:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn login_mode_refuses_away_from_the_login_screen() {
+    let ph = phone().await;
+    let pc = Pc::start_boot(None, false, &ph).await;
+    pc.boot().set_seat(Seat::Other);
+    assert!(connect(&ph, &pc.as_paired()).await.is_err());
+    pc.boot().set_seat(Seat::Greeter {
+        display: ":0".into(),
+    });
+    connect(&ph, &pc.as_paired())
+        .await
+        .expect("back at the login screen");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn login_mode_limits_sessions_per_hour() {
+    let ph = phone().await;
+    let pc = Pc::start_boot(None, false, &ph).await;
+    for i in 0..dishus_daemon::boot::PER_HOUR {
+        let s = connect(&ph, &pc.as_paired())
+            .await
+            .unwrap_or_else(|e| panic!("session {i}: {e}"));
+        drop(s);
+        wait_for(|| pc.state.sessions().is_empty()).await;
+    }
+    assert!(
+        connect(&ph, &pc.as_paired()).await.is_err(),
+        "one session too many in an hour"
+    );
+    // Allowing the phone again (sudo dishus boot allow) clears it.
+    pc.state
+        .allow_device(&ph.endpoint_id(), "phone", 30)
+        .unwrap();
+    connect(&ph, &pc.as_paired()).await.expect("allowed again");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn allow_is_login_mode_only_and_capped() {
+    let ph = phone().await;
+    let pc = Pc::start_boot(None, false, &ph).await;
+    let d = pc.state.device(&ph.endpoint_id()).unwrap();
+    let max = dishus_daemon::boot::MAX_ALLOW_DAYS as u64 * 86_400;
+    assert!(
+        d.expires_at <= d.paired_at + max,
+        "asked 90 days, got more than 30"
+    );
+    let normal = Pc::start().await;
+    assert!(
+        normal
+            .state
+            .allow_device(&ph.endpoint_id(), "x", 30)
+            .is_err()
     );
 }

@@ -6,7 +6,7 @@
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -108,6 +108,48 @@ impl KeyGate {
 /// A frame not delivered within this is reset; the next frame sent is an IDR.
 const FRAME_DEADLINE: Duration = Duration::from_millis(1000);
 
+/// When a frame last went out (login mode types nothing without a fresh picture).
+pub struct VideoSeen {
+    t0: Instant,
+    /// ms since `t0` + 1; 0 = never
+    last: AtomicU64,
+}
+
+impl VideoSeen {
+    fn new() -> Self {
+        Self {
+            t0: Instant::now(),
+            last: AtomicU64::new(0),
+        }
+    }
+    fn mark(&self) {
+        self.last
+            .store(self.t0.elapsed().as_millis() as u64 + 1, Ordering::Relaxed);
+    }
+    fn fresh(&self, within: Duration) -> bool {
+        match self.last.load(Ordering::Relaxed).checked_sub(1) {
+            None => false,
+            Some(t) => {
+                (self.t0.elapsed().as_millis() as u64).saturating_sub(t)
+                    <= within.as_millis() as u64
+            }
+        }
+    }
+}
+
+/// Login mode: a session counts against the phone's limits when it ends.
+struct BootGuard {
+    boot: Arc<crate::boot::BootState>,
+    peer: iroh::EndpointId,
+    name: String,
+}
+
+impl Drop for BootGuard {
+    fn drop(&mut self) {
+        self.boot.ended(&self.peer, &self.name);
+    }
+}
+
 enum VideoCmd {
     Keyframe,
     SetStream(StreamParams),
@@ -187,6 +229,14 @@ pub async fn handle(state: Arc<AppState>, conn: Connection) -> Result<()> {
         name: name.clone(),
     };
     state.touch(&peer);
+    let _boot_guard = state.boot.clone().map(|boot| {
+        boot.started(&peer, &name);
+        BootGuard {
+            boot,
+            peer,
+            name: name.clone(),
+        }
+    });
     state.notifier.notify(
         "DiShus: phone connected",
         &format!("{name} is controlling this PC"),
@@ -221,6 +271,26 @@ pub async fn handle(state: Arc<AppState>, conn: Connection) -> Result<()> {
             None
         }
     };
+    if state.boot.is_some() && capture.is_none() {
+        // owner's rule: a password is never typed unseen
+        tracing::warn!("{name}: login mode without a picture of the login screen; ending");
+        let _ = out_tx
+            .send(ServerMsg::Notice {
+                kind: NoticeKind::CaptureUnavailable,
+                message: "the login screen can't be shown, so login mode won't type anything"
+                    .into(),
+            })
+            .await;
+        let _ = out_tx
+            .send(ServerMsg::Bye {
+                reason: ByeReason::Normal,
+            })
+            .await;
+        drop(out_tx);
+        let _ = timeout(Duration::from_millis(1500), writer).await;
+        conn.close(0u32.into(), b"bye");
+        return Ok(());
+    }
     let monitors: Vec<MonitorInfo> = capture.as_ref().map(|c| c.monitors()).unwrap_or_default();
     let expires_at = state.device(&peer).map(|d| d.expires_at).unwrap_or(0);
     out_tx
@@ -236,6 +306,7 @@ pub async fn handle(state: Arc<AppState>, conn: Connection) -> Result<()> {
     let (vid_tx, vid_rx) = mpsc::channel::<VideoCmd>(16);
     // The video controller's view of the link, for the audio sender.
     let pressure = Arc::new(AtomicU8::new(Pressure::Clean as u8));
+    let seen = Arc::new(VideoSeen::new());
     let video = capture.map(|cap| {
         tokio::spawn(video_task(
             conn.clone(),
@@ -245,8 +316,18 @@ pub async fn handle(state: Arc<AppState>, conn: Connection) -> Result<()> {
             out_tx.clone(),
             state.config.video.max_bitrate_kbps,
             pressure.clone(),
+            seen.clone(),
         ))
     });
+    // Login mode: sessions are short, and input needs a fresh picture.
+    let login_mode = state.boot.is_some();
+    let session_end = tokio::time::Instant::now()
+        + if login_mode {
+            crate::boot::SESSION_MAX
+        } else {
+            Duration::from_secs(100 * 365 * 24 * 3600)
+        };
+    let mut warned_unseen = false;
     let mut audio = AudioSlot {
         conn: conn.clone(),
         state: state.clone(),
@@ -288,7 +369,12 @@ pub async fn handle(state: Arc<AppState>, conn: Connection) -> Result<()> {
                 };
                 last_rx = tokio::time::Instant::now();
                 held_released = false;
-                match handle_msg(&state, &peer, v2, msg, &out_tx, &vid_tx, &mut audio).await {
+                let input_ok = !login_mode || seen.fresh(crate::boot::VIDEO_FRESH);
+                if !input_ok && !warned_unseen {
+                    warned_unseen = true;
+                    tracing::warn!("{name}: login mode: input dropped, no fresh picture of the login screen");
+                }
+                match handle_msg(&state, &peer, v2, input_ok, msg, &out_tx, &vid_tx, &mut audio).await {
                     Ok(true) => {}
                     Ok(false) => break ByeReason::Normal,
                     Err(e) => {
@@ -298,6 +384,14 @@ pub async fn handle(state: Arc<AppState>, conn: Connection) -> Result<()> {
                 }
             }
             _ = tokio::time::sleep_until(last_rx + idle) => break ByeReason::Timeout,
+            _ = tokio::time::sleep_until(session_end) => {
+                tracing::info!("{name}: login mode session reached its {} s limit", crate::boot::SESSION_MAX.as_secs());
+                let _ = out_tx.try_send(ServerMsg::Notice {
+                    kind: NoticeKind::Info,
+                    message: "login mode sessions last at most 3 minutes".into(),
+                });
+                break ByeReason::Timeout;
+            }
             _ = silence.tick() => {
                 // Nothing (not even a heartbeat) for a while: the network is probably switching
                 // or gone. Let go of held keys/buttons now, so nothing auto-repeats until the
@@ -347,16 +441,20 @@ fn truncate(s: &str) -> String {
 }
 
 /// Returns Ok(false) when the client said goodbye.
+#[allow(clippy::too_many_arguments)]
 async fn handle_msg(
     state: &AppState,
     peer: &iroh::EndpointId,
     v2: bool,
+    input_ok: bool,
     msg: ClientMsg,
     out: &mpsc::Sender<ServerMsg>,
     vid: &mpsc::Sender<VideoCmd>,
     audio: &mut AudioSlot,
 ) -> Result<bool> {
-    let input_res = {
+    let input_res = if !input_ok {
+        None
+    } else {
         let mut input = state.input.lock().expect("input lock");
         match &msg {
             ClientMsg::Key { code, down } => Some(input.key(*code, *down)),
@@ -442,11 +540,13 @@ struct FrameSender {
     /// Current in-flight limit (see [`inflight_limit`]); updated every ABR tick.
     max_inflight: usize,
     stats: TickStats,
+    seen: Arc<VideoSeen>,
 }
 
 impl FrameSender {
-    fn new(conn: Connection, monitor: u8) -> Self {
+    fn new(conn: Connection, monitor: u8, seen: Arc<VideoSeen>) -> Self {
         Self {
+            seen,
             conn,
             seq: 0,
             monitor,
@@ -493,6 +593,7 @@ impl FrameSender {
             return;
         }
         self.key.satisfied();
+        self.seen.mark();
         self.stats.sent += 1;
         self.stats.bytes += f.data.len() as u64;
         self.stats.keys_sent += u32::from(f.keyframe);
@@ -681,6 +782,7 @@ async fn audio_task(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn video_task(
     conn: Connection,
     mut capture: Box<dyn CaptureSession>,
@@ -689,6 +791,7 @@ async fn video_task(
     out: mpsc::Sender<ServerMsg>,
     ceiling_kbps: u32,
     pressure: Arc<AtomicU8>,
+    seen: Arc<VideoSeen>,
 ) {
     'restart: loop {
         let monitors = capture.monitors();
@@ -747,7 +850,7 @@ async fn video_task(
                 encoder: stream.encoder.clone(),
             })
             .await;
-        let mut sender = FrameSender::new(conn.clone(), params.monitor);
+        let mut sender = FrameSender::new(conn.clone(), params.monitor, seen.clone());
         let mut tick = tokio::time::interval(Duration::from_millis(abr::TICK_MS));
         // Video health over ~5 s: INFO when frames were dropped or stalled, else DEBUG.
         let mut window = TickStats::default();

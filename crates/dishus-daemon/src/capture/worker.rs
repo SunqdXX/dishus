@@ -70,6 +70,14 @@ async fn open_capture(opts: &WorkerOptions) -> Result<Capture, String> {
     if opts.test_source {
         return Ok(Capture::Test);
     }
+    // Login mode: the login screen's X server, never a portal (there is no user session).
+    if std::env::var_os("DISHUS_W_X11_ONLY").is_some_and(|v| v == "1") {
+        return if std::env::var_os("DISPLAY").is_some() {
+            Ok(Capture::X11)
+        } else {
+            Err("no login screen display".into())
+        };
+    }
     match portal::open(opts, false).await {
         Ok(p) => return Ok(Capture::Portal(p)),
         Err(PortalError::Unavailable(e)) => {

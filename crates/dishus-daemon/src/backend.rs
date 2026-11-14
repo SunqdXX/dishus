@@ -26,6 +26,9 @@ pub trait InputSink: Send {
     fn ready(&mut self) -> bool {
         true
     }
+    /// Let go of the device (login mode, when the login screen is gone). Reopened on the next
+    /// event.
+    fn close(&mut self) {}
 }
 
 /// Opens the real input backend, retrying until it works.
@@ -134,6 +137,13 @@ impl InputSink for RetryingInput {
     fn ready(&mut self) -> bool {
         self.try_open(std::time::Instant::now())
     }
+    fn close(&mut self) {
+        if self.inner.take().is_some() {
+            tracing::info!("input: {} closed", self.name);
+        }
+        self.last_try = None;
+        self.set_status(format!("{} closed (reopens on the next key)", self.name));
+    }
 }
 
 /// Wraps an [`InputSink`] and remembers what is held down, so everything can be released on
@@ -168,6 +178,12 @@ impl TrackedInput {
             buttons: Vec::new(),
             toggled: BTreeSet::new(),
         }
+    }
+
+    /// End the session's input, then close the device itself.
+    pub fn close_device(&mut self) {
+        self.end_session();
+        self.sink.close();
     }
 
     pub fn key(&mut self, code: u16, down: bool) -> std::io::Result<()> {

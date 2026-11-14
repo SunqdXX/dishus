@@ -4,6 +4,7 @@
 pub mod abr;
 pub mod audio;
 pub mod backend;
+pub mod boot;
 pub mod capture;
 pub mod config;
 pub mod devices;

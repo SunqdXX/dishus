@@ -146,6 +146,84 @@ async fn capture_worker(_mode: &str) -> Result<()> {
     Ok(())
 }
 
+/// Login-screen mode, started by `dishus-boot.service` as its own unprivileged user. See
+/// `dishus_daemon::boot` and packaging/boot-mode/.
+#[cfg(not(windows))]
+async fn run_boot() -> Result<()> {
+    use dishus_daemon::boot::{BootCapture, BootState, watch_seat};
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_env("DISHUS_LOG")
+                .unwrap_or_else(|_| EnvFilter::new("info,iroh=warn,noq=warn,noq_proto=warn")),
+        )
+        .with_target(false)
+        .without_time() // the journal has the time
+        .init();
+    rustix::process::umask(rustix::fs::Mode::from_raw_mode(0o077));
+    let paths = Paths::boot_from_env()?;
+    paths.ensure()?;
+    let _instance = paths.lock_instance(std::time::Duration::from_secs(10))?;
+    let cfg = Config::load(&paths)?;
+    let devices = DeviceStore::load(&paths)?;
+    let key = identity::load_or_create(&paths)?;
+    let owner_uid = std::env::var("DISHUS_BOOT_OWNER_UID")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok());
+    let boot = Arc::new(BootState::new(
+        paths.state_dir.join("limits.toml"),
+        owner_uid,
+        Some(paths.runtime_dir.join("history")),
+    )?);
+    let (input, input_status, _) = make_input();
+    let capture: Arc<dyn CaptureProvider> = match make_capture(&paths, &cfg) {
+        Some(worker) => Arc::new(BootCapture {
+            worker,
+            boot: boot.clone(),
+        }),
+        None => Arc::new(NoCapture("capture worker unavailable".into())),
+    };
+    let net = NetOptions::from_config(&cfg, &paths)?;
+    let state = Arc::new(
+        AppState::new(
+            paths,
+            cfg,
+            devices,
+            TrackedInput::new(input),
+            capture,
+            Notifier::disabled(),
+        )
+        .with_boot(boot),
+    );
+    let router = spawn_router(state.clone(), key, &net)
+        .await
+        .context("starting iroh endpoint")?;
+    tracing::info!(
+        "login mode: PC id {}, {} phone(s) allowed, owner uid {owner_uid:?}",
+        router.endpoint().id(),
+        state.devices.read().expect("devices").list().len()
+    );
+    tokio::spawn(watch_seat(state.clone()));
+    let ctx = Arc::new(IpcContext {
+        state: state.clone(),
+        endpoint: router.endpoint().clone(),
+        capture_backend: std::sync::RwLock::new("login screen (X11)".into()),
+        input_backend: input_status,
+    });
+    let ipc_task = tokio::spawn(ipc::serve(ctx));
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {},
+        _ = term.recv() => {},
+        r = ipc_task => tracing::error!("control socket ended: {r:?}"),
+    }
+    tracing::info!("login mode: shutting down");
+    state.end_all_sessions(dishus_proto::ByeReason::Normal);
+    state.input.lock().expect("input lock").close_device();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), router.shutdown()).await;
+    let _ = std::fs::remove_file(state.paths.socket());
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     #[cfg(windows)]
@@ -173,6 +251,8 @@ async fn main() -> Result<()> {
                     std::process::exit(1);
                 }
             }
+            #[cfg(not(windows))]
+            "--boot" => return run_boot().await,
             "--capture-worker" => {
                 #[cfg(not(windows))]
                 rustix::process::umask(rustix::fs::Mode::from_raw_mode(0o077));

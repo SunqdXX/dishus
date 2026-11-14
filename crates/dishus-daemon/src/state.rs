@@ -59,6 +59,8 @@ pub struct AppState {
     pub capture: Arc<dyn CaptureProvider>,
     /// Persist devices.toml on changes (off in some tests).
     pub persist: bool,
+    /// Set in login mode (`--boot`).
+    pub boot: Option<Arc<crate::boot::BootState>>,
 }
 
 impl AppState {
@@ -89,7 +91,14 @@ impl AppState {
             input: Mutex::new(input),
             capture,
             persist: true,
+            boot: None,
         }
+    }
+
+    /// Login mode: no pairing, sessions only at the login screen and within the limits.
+    pub fn with_boot(mut self, b: Arc<crate::boot::BootState>) -> Self {
+        self.boot = Some(b);
+        self
     }
 
     // ---- gate questions (sync, cheap) ----
@@ -101,6 +110,7 @@ impl AppState {
                 .read()
                 .expect("devices lock")
                 .is_allowed(id, now_unix())
+            && self.boot.as_ref().is_none_or(|b| b.may_stay(id))
     }
 
     pub fn is_locked_down(&self) -> bool {
@@ -120,7 +130,8 @@ impl AppState {
     }
 
     pub fn is_pairing_open(&self) -> bool {
-        !self.lockdown.load(Ordering::SeqCst)
+        self.boot.is_none()
+            && !self.lockdown.load(Ordering::SeqCst)
             && self
                 .pairing
                 .lock()
@@ -135,6 +146,9 @@ impl AppState {
     // ---- pairing ----
 
     pub fn open_pairing(&self) -> Result<(Zeroizing<[u8; TOKEN_LEN]>, Duration)> {
+        if self.boot.is_some() {
+            anyhow::bail!("login mode never pairs; allow a phone with `sudo dishus boot allow`");
+        }
         if self.lockdown.load(Ordering::SeqCst) {
             anyhow::bail!("daemon is in lockdown; run `dishus unlock` first");
         }
@@ -145,6 +159,25 @@ impl AppState {
             .expect("pairing lock")
             .open(ttl, Instant::now())?;
         Ok((tok, ttl))
+    }
+
+    /// Login mode: allow a phone at the login screen (root, through the control socket).
+    /// At most [`crate::boot::MAX_ALLOW_DAYS`] days; clears its limits.
+    pub fn allow_device(&self, id: &EndpointId, name: &str, days: u16) -> Result<u64> {
+        let Some(boot) = &self.boot else {
+            anyhow::bail!("only login mode allows phones this way; pair with `dishus pair`");
+        };
+        let days = days.clamp(1, crate::boot::MAX_ALLOW_DAYS);
+        let exp = {
+            let mut d = self.devices.write().expect("devices lock");
+            let exp = d.add(id, name, days, now_unix())?;
+            if self.persist {
+                d.save(&self.paths)?;
+            }
+            exp
+        };
+        boot.reset(id);
+        Ok(exp)
     }
 
     pub fn close_pairing(&self) {
