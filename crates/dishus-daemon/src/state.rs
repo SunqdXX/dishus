@@ -59,6 +59,8 @@ pub struct AppState {
     pub capture: Arc<dyn CaptureProvider>,
     /// Persist devices.toml on changes (off in some tests).
     pub persist: bool,
+    /// Files received from phones since the daemon started (for `dishus status`).
+    pub files_received: AtomicU64,
 }
 
 impl AppState {
@@ -89,6 +91,7 @@ impl AppState {
             input: Mutex::new(input),
             capture,
             persist: true,
+            files_received: AtomicU64::new(0),
         }
     }
 

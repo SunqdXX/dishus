@@ -1,4 +1,4 @@
-//! One authenticated remote-control session (ALPN `dishus/session/1`).
+//! One authenticated remote-control session (ALPN `dishus/session/1`, `/2` or `/3`).
 //!
 //! The gate has already verified the peer against the allowlist; we check again here (the
 //! device could have been revoked between handshake and now) and on a timer while connected.
@@ -16,11 +16,11 @@ use iroh::endpoint::{Connection, SendStream};
 use tokio::{sync::mpsc, time::timeout};
 
 use dishus_proto::{
-    ALPN_SESSION_V2, ByeReason, CAPTURE_OPEN_TIMEOUT_MS, ClientMsg, FrameError,
-    HEARTBEAT_INTERVAL_MS, MAX_CONTROL_FRAME, MonitorInfo, NoticeKind, PROTO_VERSION,
-    SESSION_IDLE_TIMEOUT_MS, ServerMsg, StreamParams, VideoHeader,
+    ByeReason, CAPTURE_OPEN_TIMEOUT_MS, ClientMsg, FrameError, HEARTBEAT_INTERVAL_MS,
+    MAX_CONTROL_FRAME, MonitorInfo, NoticeKind, PROTO_VERSION, SESSION_IDLE_TIMEOUT_MS, ServerMsg,
+    StreamParams, VideoHeader,
     audio::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AudioHeader},
-    read_frame,
+    read_frame, session_version,
     video::FLAG_KEYFRAME,
     write_frame,
 };
@@ -164,8 +164,11 @@ pub async fn handle(state: Arc<AppState>, conn: Connection) -> Result<()> {
         bail!("peer no longer allowed");
     }
     let device = state.device(&peer).context("device vanished")?;
-    // session/2 phones may ask for audio; to a session/1 phone nothing new is ever sent.
-    let v2 = conn.alpn() == ALPN_SESSION_V2;
+    // session/2 phones may ask for audio, session/3 phones may send files; to an older phone
+    // nothing newer is ever sent.
+    let version = session_version(conn.alpn()).unwrap_or(1);
+    let v2 = version >= 2;
+    let v3 = version >= 3;
 
     let (send, mut recv) = timeout(HELLO_TIMEOUT, conn.accept_bi())
         .await
@@ -232,6 +235,18 @@ pub async fn handle(state: Arc<AppState>, conn: Connection) -> Result<()> {
         })
         .await
         .ok();
+    let files = v3.then(|| {
+        let f = &state.config.files;
+        let _ = out_tx.try_send(ServerMsg::FilesInfo {
+            enabled: f.enabled,
+            max_bytes: f.max_bytes(),
+        });
+        tokio::spawn(crate::files::serve(
+            conn.clone(),
+            state.clone(),
+            name.clone(),
+        ))
+    });
 
     let (vid_tx, vid_rx) = mpsc::channel::<VideoCmd>(16);
     // The video controller's view of the link, for the audio sender.
@@ -329,6 +344,10 @@ pub async fn handle(state: Arc<AppState>, conn: Connection) -> Result<()> {
     state.end_session_input();
     if let Some(v) = video {
         v.abort();
+    }
+    // A file still coming in is dropped, which deletes its .part.
+    if let Some(f) = files {
+        f.abort();
     }
     drop(audio);
     let _ = out_tx.send(ServerMsg::Bye { reason }).await;

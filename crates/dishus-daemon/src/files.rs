@@ -12,9 +12,30 @@ use std::{
     fs::{self, File},
     io::{self, Write},
     path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
 };
 
-use dishus_proto::files::{FileRefusal, MAX_SAVED_NAME};
+use anyhow::{Context, Result};
+use bytes::Bytes;
+use iroh::endpoint::{Connection, ReadError, RecvStream, SendStream};
+use tokio::{
+    sync::{mpsc, oneshot},
+    task::JoinSet,
+    time::timeout,
+};
+
+use dishus_proto::{
+    files::{
+        CANCELLED, FileAnswer, FileOffer, FileRefusal, FileResult, MAX_FILE_FRAME, MAX_SAVED_NAME,
+    },
+    read_frame, write_frame,
+};
+
+use crate::state::AppState;
 
 /// Keep at least this much disk free after a file.
 pub const SPARE_BYTES: u64 = 1 << 30;
@@ -203,6 +224,202 @@ impl Drop for Incoming {
             tracing::warn!("files: could not delete {}: {e}", self.part.display());
         }
     }
+}
+
+// ---------- the network side ----------
+
+/// A phone that sends nothing for this long while a file is coming in is given up on.
+const STALL: Duration = Duration::from_secs(30);
+const OFFER_TIMEOUT: Duration = Duration::from_secs(10);
+/// Chunks queued for the disk thread (64 KB each at most).
+const DISK_QUEUE: usize = 16;
+
+/// Serve file streams on a session/3 connection until it closes. Aborting this task (session
+/// end, revoke, `dishus kill`) drops every transfer, which deletes its `.part`.
+pub async fn serve(conn: Connection, state: Arc<AppState>, who: String) {
+    let busy = Arc::new(AtomicBool::new(false));
+    let mut running = JoinSet::new();
+    loop {
+        tokio::select! {
+            r = conn.accept_bi() => {
+                let Ok((send, recv)) = r else { break };
+                let (state, busy, who) = (state.clone(), busy.clone(), who.clone());
+                running.spawn(async move {
+                    if let Err(e) = receive(&state, send, recv, &busy, &who).await {
+                        tracing::warn!("files: from {who}: {e:#}");
+                    }
+                });
+            }
+            Some(_) = running.join_next(), if !running.is_empty() => {}
+        }
+    }
+}
+
+/// Clears the busy flag however a transfer ends.
+struct Busy(Arc<AtomicBool>);
+impl Drop for Busy {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+async fn answer(send: &mut SendStream, a: FileAnswer) -> Result<()> {
+    write_frame(send, &a, MAX_FILE_FRAME).await?;
+    Ok(())
+}
+
+async fn receive(
+    state: &AppState,
+    mut send: SendStream,
+    mut recv: RecvStream,
+    busy: &Arc<AtomicBool>,
+    who: &str,
+) -> Result<()> {
+    let offer: FileOffer = timeout(OFFER_TIMEOUT, read_frame(&mut recv, MAX_FILE_FRAME))
+        .await
+        .context("no file offer")??;
+    let cfg = &state.config.files;
+    let dir = state.paths.files_dir.clone();
+    let refuse = |r: FileRefusal| {
+        tracing::info!(
+            "files: refused a file from {who} ({} bytes): {r}",
+            offer.size
+        );
+        FileAnswer::Refuse(r)
+    };
+    if !cfg.enabled {
+        return answer(&mut send, refuse(FileRefusal::Disabled)).await;
+    }
+    if busy.swap(true, Ordering::SeqCst) {
+        return answer(&mut send, refuse(FileRefusal::Busy)).await;
+    }
+    let busy = Busy(busy.clone());
+    let free = free_space(&dir).unwrap_or(0);
+    if let Err(r) = admit(true, cfg.max_bytes(), offer.size, free) {
+        return answer(&mut send, refuse(r)).await;
+    }
+    let name = clean_name(&offer.name);
+    let (disk, created, done) = spawn_disk_writer(dir, name.clone());
+    if let Err(e) = created.await.context("disk writer")? {
+        tracing::warn!("files: could not create {name}: {e}");
+        return answer(&mut send, refuse(FileRefusal::Failed)).await;
+    }
+    answer(&mut send, FileAnswer::Accept).await?;
+    tracing::info!("files: receiving {name} ({} bytes) from {who}", offer.size);
+
+    let mut got = 0u64;
+    let complete = loop {
+        let chunk = match timeout(STALL, recv.read_chunk(64 * 1024)).await {
+            Err(_) => break Err(anyhow::anyhow!("the phone stopped sending")),
+            Ok(Err(ReadError::Reset(code))) if code.into_inner() == u64::from(CANCELLED) => {
+                tracing::info!("files: {who} cancelled {name} after {got} bytes");
+                return Ok(()); // dropping `disk` deletes the .part
+            }
+            Ok(Err(e)) => break Err(e.into()),
+            Ok(Ok(None)) if got == offer.size => break Ok(()),
+            Ok(Ok(None)) => {
+                break Err(anyhow::anyhow!("ended after {got} of {} bytes", offer.size));
+            }
+            Ok(Ok(Some(c))) => c,
+        };
+        got += chunk.len() as u64;
+        if got > offer.size {
+            let _ = recv.stop(0u32.into());
+            break Err(anyhow::anyhow!(
+                "more than the {} bytes announced",
+                offer.size
+            ));
+        }
+        if disk.send(DiskMsg::Data(chunk)).await.is_err() {
+            break Err(anyhow::anyhow!("writing failed"));
+        }
+    };
+    let result = match complete {
+        Ok(()) => {
+            let _ = disk.send(DiskMsg::Commit).await;
+            drop(disk);
+            done.await
+                .unwrap_or_else(|_| Err(io::Error::other("disk writer gone")))
+                .map_err(anyhow::Error::from)
+        }
+        Err(e) => Err(e),
+    };
+    // the next file may come as soon as the phone hears about this one
+    drop(busy);
+    match result {
+        Ok(saved) => {
+            state.files_received.fetch_add(1, Ordering::Relaxed);
+            tracing::info!("files: saved {saved} ({got} bytes) from {who}");
+            state.notifier.notify(
+                "DiShus: file received",
+                &format!("{saved} from {who}, in Downloads/DiShus"),
+            );
+            write_frame(
+                &mut send,
+                &FileResult::Saved { name: saved },
+                MAX_FILE_FRAME,
+            )
+            .await?;
+            send.finish()?;
+            let _ = timeout(Duration::from_secs(2), send.stopped()).await;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = write_frame(&mut send, &FileResult::Failed, MAX_FILE_FRAME).await;
+            let _ = send.finish();
+            let _ = timeout(Duration::from_secs(2), send.stopped()).await;
+            Err(e.context(format!("{name} not saved")))
+        }
+    }
+}
+
+enum DiskMsg {
+    Data(Bytes),
+    /// Everything arrived: move the file into place.
+    Commit,
+}
+
+/// The file is written on a blocking thread. It is committed only after an explicit
+/// [`DiskMsg::Commit`]; if the sender goes away first (cancel, error, aborted session), the
+/// `.part` is deleted.
+fn spawn_disk_writer(
+    dir: PathBuf,
+    name: String,
+) -> (
+    mpsc::Sender<DiskMsg>,
+    oneshot::Receiver<io::Result<()>>,
+    oneshot::Receiver<io::Result<String>>,
+) {
+    let (tx, mut rx) = mpsc::channel::<DiskMsg>(DISK_QUEUE);
+    let (created_tx, created_rx) = oneshot::channel();
+    let (done_tx, done_rx) = oneshot::channel();
+    tokio::task::spawn_blocking(move || {
+        let mut file = match Incoming::create(&dir, &name) {
+            Ok(f) => {
+                let _ = created_tx.send(Ok(()));
+                f
+            }
+            Err(e) => {
+                let _ = created_tx.send(Err(e));
+                return;
+            }
+        };
+        while let Some(m) = rx.blocking_recv() {
+            match m {
+                DiskMsg::Data(b) => {
+                    if let Err(e) = file.write(&b) {
+                        let _ = done_tx.send(Err(e));
+                        return;
+                    }
+                }
+                DiskMsg::Commit => {
+                    let _ = done_tx.send(file.commit());
+                    return;
+                }
+            }
+        }
+    });
+    (tx, created_rx, done_rx)
 }
 
 #[cfg(unix)]

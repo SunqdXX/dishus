@@ -16,7 +16,7 @@ use dishus_daemon::{
         AudioControl, AudioPacket, AudioStream, BoxFut, BoxFuture, CaptureProvider, CaptureSession,
         EncodedStream, InputSink, StreamConfig, StreamControl, TrackedInput, VideoFrame,
     },
-    config::Config,
+    config::{Config, FilesConfig},
     devices::DeviceStore,
     net::{NetOptions, spawn_router},
     notify::Notifier,
@@ -24,8 +24,8 @@ use dishus_daemon::{
     state::AppState,
 };
 use dishus_proto::{
-    ALPN_SESSION, ALPN_SESSION_V2, ByeReason, ClientMsg, MonitorInfo, MouseButton, PROTO_VERSION,
-    PairingInfo, ServerMsg, StreamParams, read_frame, write_frame,
+    ALPN_SESSION, ALPN_SESSION_V2, ALPN_SESSION_V3, ByeReason, ClientMsg, MonitorInfo, MouseButton,
+    PROTO_VERSION, PairingInfo, ServerMsg, StreamParams, read_frame, write_frame,
 };
 use iroh::{SecretKey, protocol::Router};
 use tokio::{sync::mpsc, time::timeout};
@@ -230,17 +230,27 @@ impl Pc {
     }
 
     async fn start_full(capture_open: Duration, stall_after: Option<u64>) -> Self {
-        Self::start_inner(capture_open, stall_after, false).await
+        Self::start_inner(capture_open, stall_after, false, FilesConfig::default()).await
     }
 
     async fn start_slow_audio() -> Self {
-        Self::start_inner(Duration::ZERO, None, true).await
+        Self::start_inner(Duration::ZERO, None, true, FilesConfig::default()).await
+    }
+
+    /// File send turned on, files up to `max_file_mb`.
+    async fn start_files(max_file_mb: u64) -> Self {
+        let files = FilesConfig {
+            enabled: true,
+            max_file_mb,
+        };
+        Self::start_inner(Duration::ZERO, None, false, files).await
     }
 
     async fn start_inner(
         capture_open: Duration,
         stall_after: Option<u64>,
         slow_first_audio: bool,
+        files: FilesConfig,
     ) -> Self {
         let audio_opens = Arc::new(AtomicU32::new(0));
         let dir = tempfile::tempdir().unwrap();
@@ -248,6 +258,7 @@ impl Pc {
         paths.ensure().unwrap();
         let cfg = Config {
             pc_name: "test-pc".into(),
+            files,
             ..Default::default()
         };
         let input = RecInput::default();
@@ -1034,4 +1045,373 @@ async fn a_capture_that_stays_slow_is_restarted_and_numbering_continues() {
         "restarted only once"
     );
     pinger.abort();
+}
+
+// ---------- file send (session/3) ----------
+
+use dishus_proto::files::{
+    CANCELLED, FileAnswer, FileOffer, FileRefusal, FileResult, MAX_FILE_FRAME,
+};
+
+/// Everything under `dir`, as sorted relative paths.
+fn tree(dir: &std::path::Path) -> Vec<String> {
+    fn walk(base: &std::path::Path, d: &std::path::Path, out: &mut Vec<String>) {
+        let Ok(rd) = std::fs::read_dir(d) else { return };
+        for e in rd {
+            let p = e.unwrap().path();
+            out.push(p.strip_prefix(base).unwrap().to_string_lossy().into_owned());
+            if p.is_dir() {
+                walk(base, &p, out);
+            }
+        }
+    }
+    let mut v = Vec::new();
+    walk(dir, dir, &mut v);
+    v.sort();
+    v
+}
+
+impl Pc {
+    fn files_dir(&self) -> std::path::PathBuf {
+        self.state.paths.files_dir.clone()
+    }
+    fn received(&self) -> Vec<String> {
+        tree(&self.files_dir())
+    }
+}
+
+/// session/3 straight over QUIC, without the phone core, so the PC's own checks are what's
+/// tested. Returns the connection and FilesInfo.
+async fn raw_v3(
+    pc: &Pc,
+) -> (
+    iroh::endpoint::Connection,
+    ServerMsg,
+    iroh::Endpoint,
+    tokio::task::JoinHandle<()>,
+) {
+    let (conn, mut send, mut recv, ep) = raw_session(pc, ALPN_SESSION_V3).await;
+    assert_eq!(conn.alpn(), ALPN_SESSION_V3);
+    let info: ServerMsg = timeout(Duration::from_secs(5), read_frame(&mut recv, 65536))
+        .await
+        .unwrap()
+        .unwrap();
+    // keep the session alive while files go back and forth
+    let pinger = tokio::spawn(async move {
+        let _recv = recv;
+        for t in 0u64.. {
+            if write_frame(&mut send, &ClientMsg::Ping { t }, 4096)
+                .await
+                .is_err()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    });
+    (conn, info, ep, pinger)
+}
+
+/// Offer a file; if accepted send `data` (which may differ from `size`) and finish.
+async fn raw_send(
+    conn: &iroh::endpoint::Connection,
+    name: &str,
+    size: u64,
+    data: &[u8],
+) -> (FileAnswer, Option<FileResult>) {
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    let offer = FileOffer {
+        name: name.into(),
+        size,
+    };
+    write_frame(&mut send, &offer, MAX_FILE_FRAME)
+        .await
+        .unwrap();
+    let answer: FileAnswer = timeout(
+        Duration::from_secs(5),
+        read_frame(&mut recv, MAX_FILE_FRAME),
+    )
+    .await
+    .expect("no answer")
+    .unwrap();
+    if answer != FileAnswer::Accept {
+        return (answer, None);
+    }
+    // the PC may stop reading early (too much data); that's fine here
+    let _ = send.write_all(data).await;
+    let _ = send.finish();
+    let result = timeout(
+        Duration::from_secs(5),
+        read_frame::<_, FileResult>(&mut recv, MAX_FILE_FRAME),
+    )
+    .await
+    .expect("no result")
+    .ok();
+    (answer, result)
+}
+
+fn saved(r: Option<FileResult>) -> String {
+    match r {
+        Some(FileResult::Saved { name }) => name,
+        other => panic!("not saved: {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn files_are_refused_while_turned_off() {
+    let pc = Pc::start().await;
+    let (conn, info, _ep, _p) = raw_v3(&pc).await;
+    assert!(
+        matches!(info, ServerMsg::FilesInfo { enabled: false, .. }),
+        "{info:?}"
+    );
+    let (answer, _) = raw_send(&conn, "a.txt", 3, b"abc").await;
+    assert_eq!(answer, FileAnswer::Refuse(FileRefusal::Disabled));
+    assert!(
+        !pc.files_dir().exists(),
+        "nothing is even created while off"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn received_files_keep_their_bytes_and_never_overwrite() {
+    let pc = Pc::start_files(1).await;
+    let (conn, info, _ep, _p) = raw_v3(&pc).await;
+    assert_eq!(
+        info,
+        ServerMsg::FilesInfo {
+            enabled: true,
+            max_bytes: 1 << 20
+        }
+    );
+    let big: Vec<u8> = (0..700_000u32).map(|i| (i * 7 % 251) as u8).collect();
+    assert_eq!(
+        saved(raw_send(&conn, "a.bin", big.len() as u64, &big).await.1),
+        "a.bin"
+    );
+    assert_eq!(
+        saved(raw_send(&conn, "a.bin", 3, b"two").await.1),
+        "a (1).bin"
+    );
+    std::fs::write(pc.files_dir().join("b.txt"), b"the user's own").unwrap();
+    assert_eq!(
+        saved(raw_send(&conn, "b.txt", 4, b"mine").await.1),
+        "b (1).txt"
+    );
+    assert_eq!(std::fs::read(pc.files_dir().join("a.bin")).unwrap(), big);
+    assert_eq!(
+        std::fs::read(pc.files_dir().join("a (1).bin")).unwrap(),
+        b"two"
+    );
+    assert_eq!(
+        std::fs::read(pc.files_dir().join("b.txt")).unwrap(),
+        b"the user's own"
+    );
+    assert_eq!(
+        std::fs::read(pc.files_dir().join("b (1).txt")).unwrap(),
+        b"mine"
+    );
+    assert_eq!(pc.received(), ["a (1).bin", "a.bin", "b (1).txt", "b.txt"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hostile_names_are_cleaned_and_stay_in_the_folder() {
+    let pc = Pc::start_files(1).await;
+    let root = pc._dir.path().to_path_buf();
+    let (conn, _, _ep, _p) = raw_v3(&pc).await;
+    let before = tree(&root);
+    let long = format!("{}.txt", "ş".repeat(150)); // 300 bytes + ".txt"
+    let cases = [
+        ("../../x", "x"),
+        ("..\\..\\y", "y"),
+        ("/etc/cron.d/evil", "evil"),
+        ("CON.txt", "_CON.txt"),
+        ("nul", "_nul"),
+        ("a:b", "ab"),
+        (".bashrc", "bashrc"),
+        ("evil\u{202E}gpj.exe", "evilgpj.exe"),
+        ("..", "file"),
+    ];
+    for (offered, want) in cases {
+        let got = saved(raw_send(&conn, offered, 1, b"z").await.1);
+        assert_eq!(got, want, "{offered:?}");
+    }
+    let got = saved(raw_send(&conn, &long, 1, b"z").await.1);
+    assert!(
+        got.len() <= 200 && got.ends_with(".txt") && got.starts_with('ş'),
+        "{got}"
+    );
+    // nothing appeared anywhere but the DiShus folder
+    let outside: Vec<String> = tree(&root)
+        .into_iter()
+        .filter(|p| !before.contains(p) && !p.starts_with("downloads"))
+        .collect();
+    assert!(outside.is_empty(), "{outside:?}");
+    assert_eq!(pc.received().len(), cases.len() + 1, "{:?}", pc.received());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cancel_halfway_leaves_nothing_and_the_session_goes_on() {
+    let pc = Pc::start_files(1).await;
+    let (conn, _, _ep, _p) = raw_v3(&pc).await;
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    let offer = FileOffer {
+        name: "half.bin".into(),
+        size: 1 << 20,
+    };
+    write_frame(&mut send, &offer, MAX_FILE_FRAME)
+        .await
+        .unwrap();
+    let answer: FileAnswer = read_frame(&mut recv, MAX_FILE_FRAME).await.unwrap();
+    assert_eq!(answer, FileAnswer::Accept);
+    send.write_all(&[1u8; 300_000]).await.unwrap();
+    wait_for(|| pc.received().iter().any(|n| n.ends_with(".part"))).await;
+    send.reset(CANCELLED.into()).unwrap();
+    wait_for(|| pc.received().is_empty()).await;
+    // the session is fine: the next file goes through
+    assert_eq!(
+        saved(raw_send(&conn, "next.txt", 2, b"ok").await.1),
+        "next.txt"
+    );
+    assert_eq!(pc.received(), ["next.txt"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn wrong_sizes_and_limits_save_nothing() {
+    let pc = Pc::start_files(1).await;
+    let (conn, _, _ep, _p) = raw_v3(&pc).await;
+    let (a, _) = raw_send(&conn, "big.bin", (1 << 20) + 1, b"").await;
+    assert_eq!(
+        a,
+        FileAnswer::Refuse(FileRefusal::TooBig { max_bytes: 1 << 20 })
+    );
+    // fewer bytes than announced, then the end
+    let (a, r) = raw_send(&conn, "short.bin", 10, b"12345").await;
+    assert_eq!((a, r), (FileAnswer::Accept, Some(FileResult::Failed)));
+    // more bytes than announced
+    let (a, r) = raw_send(&conn, "long.bin", 5, b"1234567890").await;
+    assert_eq!(a, FileAnswer::Accept);
+    assert_ne!(
+        r,
+        Some(FileResult::Saved {
+            name: "long.bin".into()
+        })
+    );
+    wait_for(|| pc.received().is_empty()).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn one_file_at_a_time() {
+    let pc = Pc::start_files(1).await;
+    let (conn, _, _ep, _p) = raw_v3(&pc).await;
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    let offer = FileOffer {
+        name: "first.bin".into(),
+        size: 100,
+    };
+    write_frame(&mut send, &offer, MAX_FILE_FRAME)
+        .await
+        .unwrap();
+    let a: FileAnswer = read_frame(&mut recv, MAX_FILE_FRAME).await.unwrap();
+    assert_eq!(a, FileAnswer::Accept);
+    let (second, _) = raw_send(&conn, "second.bin", 1, b"x").await;
+    assert_eq!(second, FileAnswer::Refuse(FileRefusal::Busy));
+    send.write_all(&[0; 100]).await.unwrap();
+    send.finish().unwrap();
+    let r: FileResult = read_frame(&mut recv, MAX_FILE_FRAME).await.unwrap();
+    assert_eq!(
+        r,
+        FileResult::Saved {
+            name: "first.bin".into()
+        }
+    );
+    // free again
+    assert_eq!(
+        saved(raw_send(&conn, "third.bin", 1, b"x").await.1),
+        "third.bin"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn revoking_the_phone_mid_transfer_deletes_the_partial_file() {
+    let pc = Pc::start_files(1).await;
+    let (conn, _, _ep, _p) = raw_v3(&pc).await;
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    let offer = FileOffer {
+        name: "half.bin".into(),
+        size: 1 << 20,
+    };
+    write_frame(&mut send, &offer, MAX_FILE_FRAME)
+        .await
+        .unwrap();
+    let _: FileAnswer = read_frame(&mut recv, MAX_FILE_FRAME).await.unwrap();
+    send.write_all(&[1u8; 200_000]).await.unwrap();
+    wait_for(|| pc.received().iter().any(|n| n.ends_with(".part"))).await;
+    pc.state.revoke("raw").unwrap();
+    timeout(Duration::from_secs(5), conn.closed())
+        .await
+        .expect("session cut");
+    wait_for(|| pc.received().is_empty()).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn older_sessions_get_no_file_messages() {
+    let pc = Pc::start_files(1).await;
+    // session/2: no FilesInfo before the answer to our ping, and no file streams
+    let (conn, mut send, mut recv, _ep) = raw_session(&pc, ALPN_SESSION_V2).await;
+    write_frame(&mut send, &ClientMsg::Ping { t: 7 }, 4096)
+        .await
+        .unwrap();
+    loop {
+        let m: ServerMsg = timeout(Duration::from_secs(5), read_frame(&mut recv, 65536))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            !matches!(m, ServerMsg::FilesInfo { .. }),
+            "FilesInfo on session/2"
+        );
+        if m == (ServerMsg::Pong { t: 7 }) {
+            break;
+        }
+    }
+    let (mut fs, mut fr) = conn.open_bi().await.unwrap();
+    let offer = FileOffer {
+        name: "a".into(),
+        size: 1,
+    };
+    write_frame(&mut fs, &offer, MAX_FILE_FRAME).await.unwrap();
+    assert!(
+        timeout(
+            Duration::from_millis(500),
+            read_frame::<_, FileAnswer>(&mut fr, MAX_FILE_FRAME)
+        )
+        .await
+        .is_err(),
+        "a session/2 PC must not answer file offers"
+    );
+    assert!(pc.received().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sound_still_works_on_session3() {
+    let pc = Pc::start().await;
+    let (conn, mut send, mut recv, _ep) = raw_session(&pc, ALPN_SESSION_V3).await;
+    write_frame(&mut send, &ClientMsg::SetAudio { on: true }, 4096)
+        .await
+        .unwrap();
+    timeout(Duration::from_secs(5), async {
+        loop {
+            let m: ServerMsg = read_frame(&mut recv, 65536).await.unwrap();
+            if matches!(m, ServerMsg::AudioStarted { .. }) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("AudioStarted on session/3");
+    timeout(Duration::from_secs(2), conn.read_datagram())
+        .await
+        .unwrap()
+        .unwrap();
 }
