@@ -1198,3 +1198,36 @@ async fn allow_is_login_mode_only_and_capped() {
             .is_err()
     );
 }
+
+/// Only root (`sudo dishus boot allow`) extends a phone's login-mode allowance; a phone (say
+/// a stolen one) can't renew itself from a session.
+#[tokio::test(flavor = "multi_thread")]
+async fn login_mode_phone_cannot_renew_itself() {
+    let ph = phone().await;
+    let pc = Pc::start_boot(None, false, &ph).await;
+    let before = pc.state.device(&ph.endpoint_id()).unwrap().expires_at;
+    let s = connect(&ph, &pc.as_paired()).await.unwrap();
+    s.send(ClientMsg::RenewPairing { days: 90 }).unwrap();
+    let refused = loop {
+        match timeout(Duration::from_secs(5), s.next_control())
+            .await
+            .unwrap()
+        {
+            Some(ServerMsg::Renewed { .. }) => break false,
+            Some(ServerMsg::Notice {
+                kind: dishus_proto::NoticeKind::Refused,
+                ..
+            }) => {
+                break true;
+            }
+            Some(_) => continue,
+            None => panic!("closed"),
+        }
+    };
+    assert!(refused, "renewed from a login-mode session");
+    assert_eq!(
+        pc.state.device(&ph.endpoint_id()).unwrap().expires_at,
+        before
+    );
+    assert!(pc.state.renew(&ph.endpoint_id(), 30).is_err());
+}

@@ -238,6 +238,11 @@ impl AppState {
     // ---- device management ----
 
     pub fn renew(&self, id: &EndpointId, days: u16) -> Result<u64> {
+        // Login mode: only root extends an allowance (`sudo dishus boot allow`, max 30 days),
+        // never the phone itself.
+        if self.boot.is_some() {
+            anyhow::bail!("at the login screen only `sudo dishus boot allow` extends this phone");
+        }
         let mut d = self.devices.write().expect("devices lock");
         let exp = d.renew(id, days, now_unix())?;
         if self.persist {
