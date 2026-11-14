@@ -1,6 +1,9 @@
 package org.dishus.app.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -50,6 +53,15 @@ fun RemoteScreen(app: DishusApp, pcId: String, onExit: () -> Unit) {
     val ui by controller.ui.collectAsState()
     val bg by app.backgrounded.collectAsState()
     var sheet by remember { mutableStateOf(false) }
+    var filesWarning by remember { mutableStateOf(false) }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        app.pickerClosed()
+        controller.sendFiles(uris)
+    }
+    fun pickFiles() {
+        app.pickerOpening()
+        runCatching { picker.launch(arrayOf("*/*")) }.onFailure { app.pickerClosed() }
+    }
 
     // Never keep controlling the PC from a pocket: drop the session when backgrounded, release
     // everything, and reconnect (fast) when the app comes back.
@@ -79,6 +91,18 @@ fun RemoteScreen(app: DishusApp, pcId: String, onExit: () -> Unit) {
                         Text(if (ui.audioOn) "🔊" else "🔇", color = Color.White)
                     }
                 }
+                if (ui.filesSupported) {
+                    TextButton(
+                        onClick = {
+                            when {
+                                ui.transfer != null -> {}
+                                ui.filesInfo?.enabled != true -> controller.showNotice(FILES_OFF)
+                                !app.prefs.filesWarned -> filesWarning = true
+                                else -> pickFiles()
+                            }
+                        },
+                    ) { Text("📎", color = Color.White) }
+                }
                 TextButton(onClick = { sheet = true }) { Text("⚙", color = Color.White) }
             }
             if (!ui.connected) {
@@ -86,6 +110,26 @@ fun RemoteScreen(app: DishusApp, pcId: String, onExit: () -> Unit) {
                     ui.status, color = Color.White, modifier = Modifier.align(Alignment.Center).padding(24.dp),
                     style = MaterialTheme.typography.bodyMedium,
                 )
+            }
+        }
+        ui.transfer?.let { t ->
+            Row(
+                Modifier.fillMaxWidth().background(Color(0xFF1B2126)).padding(horizontal = 10.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    val pct = if (t.size > 0) (t.sent * 100 / t.size).toInt() else 100
+                    Text(
+                        (if (t.count > 1) "${t.index}/${t.count} " else "") + "${t.name.take(40)} · " +
+                            (if (t.sent >= t.size) "saving on the PC…" else "$pct % · ${"%.1f".format(t.mbPerSec)} MB/s"),
+                        color = Color.White, style = MaterialTheme.typography.labelSmall,
+                    )
+                    LinearProgressIndicator(
+                        progress = { if (t.size > 0) t.sent.toFloat() / t.size else 1f },
+                        modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+                    )
+                }
+                TextButton(onClick = { controller.cancelSend() }) { Text("Cancel", color = Color.White) }
             }
         }
         // ---- 40 %: keyboard ----
@@ -99,6 +143,17 @@ fun RemoteScreen(app: DishusApp, pcId: String, onExit: () -> Unit) {
             confirmButton = { TextButton(onClick = { controller.clearNotice() }) { Text("OK") } },
         )
     }
+    if (filesWarning) {
+        AlertDialog(
+            onDismissRequest = { filesWarning = false },
+            title = { Text("Send files to the PC") },
+            text = { Text(FILES_WARNING) },
+            confirmButton = {
+                TextButton(onClick = { filesWarning = false; app.prefs.filesWarned = true; pickFiles() }) { Text("Choose files") }
+            },
+            dismissButton = { TextButton(onClick = { filesWarning = false }) { Text("Not now") } },
+        )
+    }
     if (ui.fatal) {
         AlertDialog(
             onDismissRequest = onExit,
@@ -109,6 +164,15 @@ fun RemoteScreen(app: DishusApp, pcId: String, onExit: () -> Unit) {
     }
     if (sheet) QuickSettings(app, controller, onDismiss = { sheet = false }, onDisconnect = { sheet = false; onExit() })
 }
+
+private const val FILES_OFF =
+    "File sending is off on this PC. To turn it on, set `enabled = true` under [files] in DiShus's " +
+        "config.toml on the PC and restart DiShus."
+
+private const val FILES_WARNING =
+    "Files go to the Downloads/DiShus folder on the PC. DiShus never opens them and never " +
+        "replaces a file that is already there.\n\nOnly send files you trust: a file can harm the PC " +
+        "if someone opens it there. Keep this screen open until the transfer is done."
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

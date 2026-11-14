@@ -37,6 +37,30 @@ class DishusApp : Application() {
     private val handler = Handler(Looper.getMainLooper())
     private val lockRunnable = Runnable { lockNow() }
 
+    /**
+     * The system file picker is another app: opening it stops ours, which would drop the session
+     * and maybe lock. While it is open (at most [PICKER_GRACE_MS]) leaving doesn't count; if the
+     * user goes elsewhere from the picker, the normal rules apply when the grace runs out.
+     */
+    @Volatile private var pickerUntil = 0L
+    private var stopped = false
+    private val pickerExpired = Runnable { if (stopped) wentToBackground() }
+
+    fun pickerOpening() {
+        pickerUntil = android.os.SystemClock.elapsedRealtime() + PICKER_GRACE_MS
+    }
+
+    fun pickerClosed() {
+        pickerUntil = 0L
+        handler.removeCallbacks(pickerExpired)
+    }
+
+    private fun wentToBackground() {
+        backgrounded.value = true
+        val minutes = prefs.autoLockMinutes
+        if (minutes == 0) lockNow() else handler.postDelayed(lockRunnable, minutes * 60_000L)
+    }
+
     override fun onCreate() {
         super.onCreate()
         System.setProperty("jna.nosys", "true")
@@ -49,12 +73,14 @@ class DishusApp : Application() {
         watchNetwork()
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStop(owner: LifecycleOwner) {
-                backgrounded.value = true
-                val minutes = prefs.autoLockMinutes
-                if (minutes == 0) lockNow() else handler.postDelayed(lockRunnable, minutes * 60_000L)
+                stopped = true
+                val left = pickerUntil - android.os.SystemClock.elapsedRealtime()
+                if (left > 0) handler.postDelayed(pickerExpired, left) else wentToBackground()
             }
 
             override fun onStart(owner: LifecycleOwner) {
+                stopped = false
+                handler.removeCallbacks(pickerExpired)
                 backgrounded.value = false
                 handler.removeCallbacks(lockRunnable)
             }
@@ -95,3 +121,6 @@ class DishusApp : Application() {
         vault.save(core.exportVault())
     }
 }
+
+/** How long the file picker may stay open before leaving the app counts as leaving it. */
+private const val PICKER_GRACE_MS = 120_000L

@@ -204,6 +204,7 @@ async fn main() -> Result<()> {
                 let path = args.get(1).context("usage: send-file <path>")?;
                 let r = send_file(&s, path, &args).await;
                 s.close().await;
+                client.close().await;
                 return r;
             }
             if cmd == "audio" {

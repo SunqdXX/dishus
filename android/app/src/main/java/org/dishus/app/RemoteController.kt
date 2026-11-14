@@ -11,6 +11,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,6 +25,8 @@ import org.dishus.app.input.Evdev
 import org.dishus.app.video.H264Decoder
 import uniffi.dishus_core.ControlEvent
 import uniffi.dishus_core.DishusException
+import uniffi.dishus_core.FileSend
+import uniffi.dishus_core.FilesInfo
 import uniffi.dishus_core.Monitor
 import uniffi.dishus_core.RemoteSession
 import uniffi.dishus_core.StreamSettings
@@ -54,7 +57,14 @@ data class RemoteUi(
     /** The PC can send audio (its DiShus speaks session/2). */
     val audioSupported: Boolean = false,
     val audioOn: Boolean = false,
+    /** The PC's DiShus can take files (session/3); [filesInfo] says whether it does now. */
+    val filesSupported: Boolean = false,
+    val filesInfo: FilesInfo? = null,
+    val transfer: Transfer? = null,
 )
+
+/** A file going to the PC. [index] counts from 1 of [count]. */
+data class Transfer(val name: String, val sent: Long, val size: Long, val index: Int, val count: Int, val mbPerSec: Double)
 
 /**
  * Owns one remote session: connect with backoff, pump video into the decoder, surface control
@@ -85,6 +95,7 @@ class RemoteController(private val app: DishusApp, private val pcId: String) {
     fun stop() {
         // runLoop owns the session: cancelling it releases keys, closes and destroys the session
         // only after the video/stats children have stopped using it.
+        sendJob?.cancel()
         runJob?.cancel()
         mods.clear()
         publishMods()
@@ -145,7 +156,10 @@ class RemoteController(private val app: DishusApp, private val pcId: String) {
             try {
                 session = s
                 val audioOk = s.audioSupported()
-                _ui.value = _ui.value.copy(audioSupported = audioOk, audioOn = audioOk && app.prefs.audioOn)
+                _ui.value = _ui.value.copy(
+                    audioSupported = audioOk, audioOn = audioOk && app.prefs.audioOn,
+                    filesSupported = false, filesInfo = null,
+                )
                 if (audioOk && app.prefs.audioOn) runCatching { s.setAudio(true) }
                 coroutineScope {
                     val video = launch(decodeDispatcher) { quietly("video") { videoLoop(s) } }
@@ -311,11 +325,106 @@ class RemoteController(private val app: DishusApp, private val pcId: String) {
     private suspend fun statsLoop(s: RemoteSession) {
         while (true) {
             delay(1000)
-            _ui.value = _ui.value.copy(rttMs = s.rttMs().toLong(), path = s.path())
+            val files = s.files()
+            _ui.value = _ui.value.copy(
+                rttMs = s.rttMs().toLong(), path = s.path(),
+                filesSupported = files != null, filesInfo = files,
+            )
+        }
+    }
+
+    // ---------- files (phone → PC) ----------
+
+    private var sendJob: Job? = null
+
+    /**
+     * Send [uris] one after another into the PC's Downloads/DiShus. Stops at the first error;
+     * cancelling (or the session ending) stops the current file and the PC deletes its part.
+     */
+    fun sendFiles(uris: List<android.net.Uri>) {
+        if (uris.isEmpty() || sendJob?.isActive == true) return
+        sendJob = scope.launch(Dispatchers.IO) {
+            val done = mutableListOf<String>()
+            var problem: String? = null
+            try {
+                for ((i, uri) in uris.withIndex()) {
+                    val s = session ?: run { problem = "Not connected"; null } ?: break
+                    val (name, size) = describe(uri)
+                    if (size == null) { problem = "$name: its size is unknown, so it can't be sent"; break }
+                    sendOne(s, uri, name, size, i + 1, uris.size)?.let { done += it }
+                }
+            } catch (e: CancellationException) {
+                problem = "Cancelled"
+            } catch (e: Exception) {
+                problem = (e as? DishusException)?.message ?: e.message ?: "failed"
+            } finally {
+                _ui.value = _ui.value.copy(
+                    transfer = null,
+                    notice = buildString {
+                        if (done.isNotEmpty()) append("Sent to Downloads/DiShus on the PC:\n" + done.joinToString("\n"))
+                        if (problem != null) { if (isNotEmpty()) append("\n\n"); append(problem) }
+                    },
+                )
+            }
+        }
+    }
+
+    fun cancelSend() { sendJob?.cancel() }
+
+    private fun describe(uri: android.net.Uri): Pair<String, Long?> {
+        app.contentResolver.query(uri, null, null, null, null)?.use { c ->
+            if (c.moveToFirst()) {
+                val n = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                val z = c.getColumnIndex(android.provider.OpenableColumns.SIZE)
+                val name = if (n >= 0) c.getString(n) else null
+                val size = if (z >= 0 && !c.isNull(z)) c.getLong(z) else null
+                return (name?.takeIf { it.isNotBlank() } ?: "file") to size
+            }
+        }
+        return "file" to null
+    }
+
+    /** Returns the name the PC saved it as. */
+    private suspend fun sendOne(s: RemoteSession, uri: android.net.Uri, name: String, size: Long, index: Int, count: Int): String? {
+        val shown = name.take(200)
+        _ui.value = _ui.value.copy(transfer = Transfer(shown, 0, size, index, count, 0.0))
+        val f: FileSend = s.sendFile(shown, size.toULong())
+        try {
+            val t0 = System.nanoTime()
+            var last = 0L
+            app.contentResolver.openInputStream(uri).use { input ->
+                input ?: throw IllegalStateException("$name can't be opened")
+                val buf = ByteArray(64 * 1024)
+                var total = 0L
+                while (true) {
+                    currentCoroutineContext().ensureActive()
+                    val n = input.read(buf)
+                    if (n < 0) break
+                    if (total + n > size) throw IllegalStateException("$name grew while sending")
+                    f.write(if (n == buf.size) buf else buf.copyOf(n))
+                    total += n
+                    val now = System.nanoTime()
+                    if (now - last > 200_000_000L) {
+                        last = now
+                        val mbs = total / 1e6 / ((now - t0) / 1e9).coerceAtLeast(0.001)
+                        _ui.value = _ui.value.copy(transfer = Transfer(shown, total, size, index, count, mbs))
+                    }
+                }
+                if (total != size) throw IllegalStateException("$name was shorter than its size")
+            }
+            _ui.value = _ui.value.copy(transfer = _ui.value.transfer?.copy(sent = size))
+            return f.finish()
+        } catch (e: Throwable) {
+            f.cancel()
+            throw e
+        } finally {
+            f.destroy()
         }
     }
 
     fun clearNotice() { _ui.value = _ui.value.copy(notice = null) }
+
+    fun showNotice(text: String) { _ui.value = _ui.value.copy(notice = text) }
 
     // ---------- input ----------
 

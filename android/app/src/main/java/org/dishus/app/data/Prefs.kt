@@ -36,6 +36,11 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("allow_screenshots", false)
         set(v) = sp.edit().putBoolean("allow_screenshots", v).apply()
 
+    /** The file-send warning was shown and accepted once. */
+    var filesWarned: Boolean
+        get() = sp.getBoolean("files_warned", false)
+        set(v) = sp.edit().putBoolean("files_warned", v).apply()
+
     var haptics: Boolean
         get() = sp.getBoolean("haptics", true)
         set(v) = sp.edit().putBoolean("haptics", v).apply()

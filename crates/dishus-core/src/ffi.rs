@@ -12,7 +12,7 @@ use zeroize::Zeroize;
 use dishus_proto::{ClientMsg, MouseButton, PairingInfo, Quality, ServerMsg, StreamParams};
 
 use crate::{
-    client::{Client, NetConfig, Session},
+    client::{Client, FileRefused, FileUpload, NetConfig, Session},
     vault::{self, KdfParams, PairedPc, VaultData},
 };
 
@@ -435,6 +435,97 @@ impl Drop for Core {
     }
 }
 
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FilesInfo {
+    pub enabled: bool,
+    /// Largest file the PC takes.
+    pub max_bytes: u64,
+}
+
+/// A file the PC accepted. Cancelled (the PC deletes the partial file) by `cancel` or when
+/// destroyed unfinished.
+#[derive(uniffi::Object)]
+pub struct FileSend {
+    up: Arc<tokio::sync::Mutex<Option<FileUpload>>>,
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+    cancel: Arc<tokio::sync::Notify>,
+    sent: Arc<std::sync::atomic::AtomicU64>,
+    handle: tokio::runtime::Handle,
+}
+
+fn cancelled_err() -> DishusError {
+    DishusError::Network {
+        msg: "cancelled".into(),
+    }
+}
+
+#[uniffi::export]
+impl FileSend {
+    /// Send the next piece; returns once it is handed to the connection (waits while the link
+    /// is busy). Errors after `cancel`.
+    pub async fn write(&self, data: Vec<u8>) -> Result<(), DishusError> {
+        let (up, cancelled, cancel, sent) = (
+            self.up.clone(),
+            self.cancelled.clone(),
+            self.cancel.clone(),
+            self.sent.clone(),
+        );
+        self.handle
+            .spawn(async move {
+                use std::sync::atomic::Ordering;
+                // registered before the flag check, so a cancel in between still wakes us
+                let wake = cancel.notified();
+                tokio::pin!(wake);
+                wake.as_mut().enable();
+                let mut g = up.lock().await;
+                let u = g.as_mut().ok_or_else(cancelled_err)?;
+                if cancelled.load(Ordering::SeqCst) {
+                    return Err(cancelled_err());
+                }
+                tokio::select! {
+                    r = u.write(&data) => {
+                        r.map_err(net_err)?;
+                        sent.store(u.sent(), Ordering::Relaxed);
+                        Ok(())
+                    }
+                    _ = wake => Err(cancelled_err()),
+                }
+            })
+            .await
+            .map_err(|e| DishusError::Internal { msg: e.to_string() })?
+    }
+
+    /// Bytes handed to the connection so far.
+    pub fn sent(&self) -> u64 {
+        self.sent.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Everything written: wait until the PC saved it; returns the name it used.
+    pub async fn finish(&self) -> Result<String, DishusError> {
+        let up = self.up.clone();
+        self.handle
+            .spawn(async move {
+                let u = up.lock().await.take().ok_or_else(cancelled_err)?;
+                u.finish().await.map_err(net_err)
+            })
+            .await
+            .map_err(|e| DishusError::Internal { msg: e.to_string() })?
+    }
+
+    /// Stop now; a `write` in progress returns an error.
+    pub fn cancel(&self) {
+        self.cancelled
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.cancel.notify_waiters();
+        let up = self.up.clone();
+        self.handle.spawn(async move {
+            if let Some(mut u) = up.lock().await.take() {
+                u.cancel();
+            }
+        });
+    }
+}
+
 #[derive(uniffi::Object)]
 pub struct RemoteSession {
     session: Arc<Session>,
@@ -495,6 +586,36 @@ impl RemoteSession {
     /// Start or stop PC audio. Errors on a PC too old for audio.
     pub fn set_audio(&self, on: bool) -> Result<(), DishusError> {
         self.send(ClientMsg::SetAudio { on })
+    }
+
+    /// Whether the PC takes files; None until it said so (shortly after Welcome), and always
+    /// None for a PC whose DiShus is too old for files.
+    pub fn files(&self) -> Option<FilesInfo> {
+        self.session
+            .files()
+            .map(|(enabled, max_bytes)| FilesInfo { enabled, max_bytes })
+    }
+
+    /// Offer a file. A refusal is `Rejected` with a message for the user ("file sending is off
+    /// on this PC", "too big: ..."). Then `write` exactly `size` bytes and `finish`.
+    pub async fn send_file(&self, name: String, size: u64) -> Result<Arc<FileSend>, DishusError> {
+        let s = self.session.clone();
+        let up = self
+            .handle
+            .spawn(async move { s.send_file(&name, size).await })
+            .await
+            .map_err(|e| DishusError::Internal { msg: e.to_string() })?
+            .map_err(|e| match e.downcast_ref::<FileRefused>() {
+                Some(r) => DishusError::Rejected { msg: r.to_string() },
+                None => net_err(e),
+            })?;
+        Ok(Arc::new(FileSend {
+            up: Arc::new(tokio::sync::Mutex::new(Some(up))),
+            cancelled: Arc::default(),
+            cancel: Arc::default(),
+            sent: Arc::default(),
+            handle: self.handle.clone(),
+        }))
     }
 
     pub async fn next_control(&self) -> Option<ControlEvent> {
@@ -559,7 +680,8 @@ impl RemoteSession {
                 sample_rate,
                 channels,
             },
-            Some(ServerMsg::Pong { .. }) => return None, // never forwarded by Session
+            // never forwarded by Session (FilesInfo is read with `files()`)
+            Some(ServerMsg::Pong { .. } | ServerMsg::FilesInfo { .. }) => return None,
         })
     }
 
