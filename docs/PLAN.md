@@ -26,6 +26,13 @@ Caps Lock undo, auto-start, `status`, `doctor`, and a standard (non-admin) user 
 PC id after a restart. The phone's part was played by the `desktop_client` example. Not tested:
 a real phone against Windows, video.
 
+Windows VM with the 0.32 exe (2026-11-15): installs, pairs with `desktop_client`, typed keys
+arrive; video fails as known. A key session started right after the previous one sometimes
+gets nothing through (0.32: 1 of 1; the 0.31 exe, same test: 2 of 3 lost, every first session
+arrived); a few seconds later it works. Same in 0.31 and the Windows session code didn't change,
+so not a regression. Cause not looked into; in the VM the failing video start keeps the earlier
+session open for ~9 s, which may play a part (unverified). Not tried on a real Windows PC.
+
 Known broken: video on Windows PCs whose graphics adapter has no video processor (the VM;
 probably also PCs without a GPU driver). Windows' software renderer can't create a device with
 `D3D11_CREATE_DEVICE_VIDEO_SUPPORT`, and the pipeline needs the video processor for BGRA to
