@@ -100,7 +100,7 @@ pub enum ClientMsg {
     ReleaseAll,
     RequestKeyframe,
     SetStream(StreamParams),
-    /// Extend this phone's pairing to now + `days` (1..=60). Only valid inside a session.
+    /// Extend this phone's pairing to now + `days` (1..=MAX_EXPIRY_DAYS, 180). Only valid inside a session.
     RenewPairing {
         days: u16,
     },

@@ -93,9 +93,11 @@ problem would show gaps or growing delay). Not reproduced on demand: 2 app reope
 toggles by adb were clean. Fix: the PC counts packets per second from its capture;
 3 seconds in a row with 1-39 (0 = idle output) restart the capture, at most once per 20 s, and
 log a warning with the timestamp jumps. Packet numbers carry on. e2e test with a capture slowed
-to 30/s (fails without the fix). Built for the owner to install by hand; not proven in real use yet.
+to 30/s (fails without the fix). In real use on the owner's PC the warning fired ("only 37-38
+packets ... restarting it"), which confirms the PC capture as the cause, but it came back about
+20 s after each restart: the restart is a workaround, the cause inside the capture is still open.
 
-## X11 / XFCE capture fix (branch `x11-fix`, 2026-11-14; not merged, not released)
+## X11 / XFCE capture fix (2026-11-14; merged into main, not released yet)
 
 Bug: on an X11 session (XFCE under SDDM) every stream failed with "Element failed to change
 its state". Causes and fixes:
@@ -120,6 +122,14 @@ pipeline in the same sandbox on XFCE).
 Not tested: the setup-capture / pair change on a real X11 session (tests and CI only),
 multi-monitor X11, other display managers (LightDM, GDM on X11), X sessions that don't export
 `DISPLAY` to systemd. Installed users get the new unit only when they reinstall.
+
+## Lock screen of a logged-in session (tested 2026-11-14)
+
+When an already-logged-in session locks, the daemon keeps running and the phone sees and uses the
+lock screen, so the password can be typed from the phone. Tested only with caelestia's lock on
+Hyprland (`loginctl lock-session`); hyprlock, KDE, GNOME and other lockers are untested. No
+boot or login-screen support in main: login mode and an autologin + lock-at-start recipe were
+tried on branches and are parked, not installed, not recommended.
 
 ## Next (none started; each needs the owner's go)
 

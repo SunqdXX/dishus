@@ -116,7 +116,7 @@ The in-app RTT is the control-channel ping only. Measure the real numbers:
 
 ## 6. Expired device
 
-To avoid waiting 30 days, force the expiry:
+To avoid waiting for the expiry (180 days by default), force it:
 
 ```sh
 systemctl --user stop dishus
@@ -130,7 +130,7 @@ systemctl --user start dishus
 - [ ] The app cannot connect. Because you only changed the PC's copy, the phone still thinks the
       pairing is valid. It shows "Can't reach PC" and keeps retrying with backoff: the PC drops it
       silently, exactly like a stranger. The message "The pairing with this PC has expired" only
-      appears when the phone's own expiry date has passed, as it does after a real 30 days.
+      appears when the phone's own expiry date has passed, as it does once the real expiry has passed.
 - [ ] **Silent drop:** with `DISHUS_LOG=debug`, the journal shows the rejection at the gate and
       nothing from the session handler or the parser.
 - [ ] **Renew:** `dishus renew <phone> --days 7` → the app connects again on its next retry
