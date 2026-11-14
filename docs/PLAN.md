@@ -131,6 +131,69 @@ Not pushed, not released.
   push), a real slow network. Files come out 0600 in a 0700 folder on Linux (the daemon's
   private umask), which is safe but stricter than a browser download.
 
+## Login-screen mode, plan only (2026-11-14, not started; waiting for the owner's OK)
+
+Goal: after boot, at the login screen, type the password from an already paired phone.
+
+Facts on the owner's PC (read only): SDDM 0.21 with an X11 greeter (no `DisplayServer`
+set, X11 is the default); no LUKS; network is one system-wide Ethernet profile (no user
+permissions), up before login; no Wi-Fi hardware; `/dev/uinput` is `root:input 0660` plus a
+logind ACL for whoever has the active session (at the greeter that is the sddm user, not
+the owner); the screen lock is caelestia's own (ext-session-lock, PAM `passwd` with
+pam_faillock); SDDM's PAM also uses pam_faillock (defaults: 3 failures, 10 minutes locked).
+
+1. A second daemon, `dishus-daemon --boot`, as a system unit `dishus-boot.service`
+   (`Before=display-manager.service`), user `dishus-boot` (sysusers.d, no shell, no home),
+   state in `/var/lib/dishus-boot` (0700). Own iroh identity, so it never clashes with the
+   owner's daemon. It is idle (no input device, no capture, endpoint closed) whenever a
+   graphical session is active on seat0, and comes back on logout.
+2. Input: `/dev/uinput` only. Not the `input` group (that also reads the real keyboard). Either
+   systemd `OpenFile=/dev/uinput` (the unit passes an open fd, no group at all; needs a check
+   that the evdev crate can use an fd) or one udev line giving the `dishus-boot` group an ACL
+   on `/dev/uinput` only.
+3. Video: the greeter is an X11 server. SDDM runs `Xsetup` as root when it starts; one line
+   (`xhost +SI:localuser:dishus-boot`) lets only that user read the greeter's screen, with
+   GStreamer's `ximagesrc` (already a dependency). NVENC if the NVIDIA nodes are usable by
+   the user, else x264. Typing blind is the fallback, but it is risky: a password typed into
+   the user name field ends up in the journal as a user name.
+4. Root is needed only to install: the unit, the user, the uinput rule, the Xsetup line.
+   At run time nothing runs as root. Sandbox: ProtectSystem=strict, ProtectHome=yes,
+   NoNewPrivileges, empty CapabilityBoundingSet, DevicePolicy=closed with DeviceAllow for
+   uinput and the GPU nodes, RestrictAddressFamilies (inet, unix, netlink),
+   SystemCallFilter=@system-service, RestrictNamespaces, LockPersonality, PrivateTmp with
+   the X socket bound in.
+5. Allowlist: its own `/var/lib/dishus-boot/devices.toml`, only phones turned on for login mode
+   with `sudo dishus boot allow <phone>` from a logged-in session. No pairing ALPN at all:
+   pairing is impossible at boot. The phone learns the login-mode address from the normal
+   daemon during a normal session. `dishus revoke`, `dishus kill` and expiry reach the boot
+   daemon through its control socket (owner-only, can remove but never add). Login-mode
+   pairings last 30 days, renewed only from inside a session.
+6. Brute force: the phone's key only exists while the app is unlocked, and the app asks its
+   password again before every login-mode connection. On the PC: pam_faillock already locks
+   after 3 failures. The boot daemon also counts Enter presses: 3 in a session with no login
+   following ends the session and blocks that phone for 15 minutes; 10 in a day turns login
+   mode off for that phone until re-allowed from a session. Every use is logged and shown as
+   a notification at the next login.
+7. Same Wi-Fi: nothing changes from today. QUIC with keys, unknown phones are dropped after
+   the handshake before any data, no TCP port, nothing shown without a paired key. Optional
+   `boot.direct_only`.
+8. Off by default: nothing is installed until `sudo dishus boot enable`; `sudo dishus boot
+   disable` removes all of it.
+9. Not possible: the LUKS prompt (it runs before the system and its network start), the UEFI
+   boot menu.
+
+Lock screen while logged in (the normal daemon, today): input should already work (the
+virtual keyboard is a normal keyboard to Hyprland, and the logind ACL stays with the owner
+while locked). Whether the portal picture shows the lock screen on Hyprland is not known; it
+needs a 2-minute test with the owner (lock, connect, look). Note: this means a stolen,
+unlocked, paired phone can already try passwords on the lock screen today; pam_faillock limits
+that to 3 tries per 10 minutes.
+
+Windows (later, maybe): a SYSTEM service that starts a helper in the console session on the
+Winlogon desktop (DXGI duplication and SendInput work there only as SYSTEM), plus SendSAS for
+Ctrl+Alt+Del. This is how RustDesk does it. It would also fix UAC prompts. It is a network
+service running as SYSTEM: a big risk and a lot of code. Only worth it if friends really ask.
+
 ## Next (none started; each needs the owner's go)
 
 1. Later (the owner postponed it on 2026-11-14): Windows video without a video processor, a
@@ -143,10 +206,7 @@ Not pushed, not released.
 4. Turning the PC on from the phone (Wake-on-LAN). The owner's request was "the PC opener";
    that reading is not confirmed yet. Needs Wake-on-LAN enabled in the BIOS by the owner, and
    only works from the same network unless the router or another device can send the packet.
-5. Controlling the login screen, to type the password from the phone. Windows: a system service
-   that captures the Winlogon desktop (would also cover UAC prompts). Linux: a root helper for
-   the greeter, which the portal can't capture. Big and security-sensitive. The boot menu
-   itself can't be done in software.
+5. Controlling the login screen: planned above, waiting for the owner's OK.
 6. iOS: still blocked by Apple's $99/year. Free sideloading expires every 7 days and needs a
    Mac or AltStore.
 7. Parked: the setup-capture token-reuse bug, the zero-install plan.
