@@ -93,9 +93,81 @@ impl AudioPolicy {
     }
 }
 
+/// The capture makes one packet per 20 ms: 50 a second while the PC plays anything.
+pub const PACKETS_PER_SEC: u32 = 50;
+/// Fewer than this in a second (but not zero) is a capture that has fallen behind.
+pub const SLOW_BELOW_PER_SEC: u32 = 40;
+/// Slow seconds in a row before the capture is restarted.
+pub const SLOW_SECS: u32 = 3;
+/// At most one restart in this many seconds, so a PC that really can't keep up isn't restarted
+/// over and over.
+pub const RESTART_EVERY_SECS: u32 = 20;
+
+/// Watches how many packets the capture hands over each second.
+///
+/// Seen on the owner's PC (2026-11-14): sometimes a freshly started capture delivers only ~30
+/// packets a second, numbered without gaps, so the phone runs dry and stutters until the sound is
+/// turned off and on. A new capture fixes it, so this does the same by itself. Zero packets is
+/// fine: an idle output sends nothing.
+#[derive(Debug)]
+pub struct RateWatch {
+    slow: u32,
+    since_restart: u32,
+}
+
+impl Default for RateWatch {
+    fn default() -> Self {
+        Self {
+            slow: 0,
+            since_restart: RESTART_EVERY_SECS,
+        }
+    }
+}
+
+impl RateWatch {
+    /// Once a second with the packets received in it. True: restart the capture now.
+    pub fn second(&mut self, got: u32) -> bool {
+        self.since_restart = self.since_restart.saturating_add(1);
+        if got > 0 && got < SLOW_BELOW_PER_SEC {
+            self.slow += 1;
+        } else {
+            self.slow = 0;
+        }
+        if self.slow >= SLOW_SECS && self.since_restart >= RESTART_EVERY_SECS {
+            self.slow = 0;
+            self.since_restart = 0;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restarts_a_capture_that_stays_slow_but_not_an_idle_one() {
+        let mut w = RateWatch::default();
+        // Idle output and normal rate: never.
+        for got in [0, 0, 0, 0, 50, 51, 49, 0, 0, 0] {
+            assert!(!w.second(got));
+        }
+        // One or two slow seconds (a hiccup): no.
+        assert!(!w.second(30));
+        assert!(!w.second(30));
+        assert!(!w.second(50));
+        // Three slow seconds in a row: yes.
+        assert!(!w.second(30));
+        assert!(!w.second(31));
+        assert!(w.second(29));
+        // Still slow right after: wait RESTART_EVERY_SECS before trying again.
+        for _ in 0..RESTART_EVERY_SECS - 1 {
+            assert!(!w.second(30));
+        }
+        assert!(w.second(30));
+    }
 
     #[test]
     fn steps_down_at_once_and_up_slowly() {

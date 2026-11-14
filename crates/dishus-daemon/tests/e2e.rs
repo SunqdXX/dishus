@@ -4,7 +4,7 @@
 use std::{
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
     time::Duration,
 };
@@ -148,10 +148,18 @@ fn fake_stream(stall_after: Option<u64>) -> anyhow::Result<EncodedStream> {
 }
 
 /// Opening capture takes this long (a slow portal / first worker start); optional stall.
-struct FakeCapture(Duration, Option<u64>);
+/// Audio: counts how often it was opened; `slow_first_audio` makes the first audio capture
+/// deliver 30 packets a second (still 20 ms each, timestamps without gaps), like the slow
+/// PipeWire capture seen on the owner's PC.
+struct FakeCapture {
+    open_delay: Duration,
+    stall_after: Option<u64>,
+    slow_first_audio: bool,
+    audio_opens: Arc<AtomicU32>,
+}
 impl CaptureProvider for FakeCapture {
     fn open(&self) -> BoxFuture<anyhow::Result<Box<dyn CaptureSession>>> {
-        let (d, stall_after) = (self.0, self.1);
+        let (d, stall_after) = (self.open_delay, self.stall_after);
         Box::pin(async move {
             tokio::time::sleep(d).await;
             Ok(Box::new(FakeCaptureSession { stall_after }) as Box<dyn CaptureSession>)
@@ -162,14 +170,20 @@ impl CaptureProvider for FakeCapture {
     }
     /// A 20 ms fake Opus packet stream, pts in microseconds from 1 s.
     fn open_audio(&self) -> BoxFuture<anyhow::Result<AudioStream>> {
-        Box::pin(async {
+        let n = self.audio_opens.fetch_add(1, Ordering::SeqCst);
+        let every = if self.slow_first_audio && n == 0 {
+            33
+        } else {
+            20
+        };
+        Box::pin(async move {
             struct NoCtl;
             impl AudioControl for NoCtl {
                 fn set_bitrate(&self, _: u32) {}
             }
             let (tx, rx) = mpsc::channel(16);
             let task = tokio::spawn(async move {
-                let mut tick = tokio::time::interval(Duration::from_millis(20));
+                let mut tick = tokio::time::interval(Duration::from_millis(every));
                 for i in 0u64.. {
                     tick.tick().await;
                     let p = AudioPacket {
@@ -203,6 +217,7 @@ struct Pc {
     state: Arc<AppState>,
     router: Router,
     input: RecInput,
+    audio_opens: Arc<AtomicU32>,
 }
 
 impl Pc {
@@ -215,6 +230,19 @@ impl Pc {
     }
 
     async fn start_full(capture_open: Duration, stall_after: Option<u64>) -> Self {
+        Self::start_inner(capture_open, stall_after, false).await
+    }
+
+    async fn start_slow_audio() -> Self {
+        Self::start_inner(Duration::ZERO, None, true).await
+    }
+
+    async fn start_inner(
+        capture_open: Duration,
+        stall_after: Option<u64>,
+        slow_first_audio: bool,
+    ) -> Self {
+        let audio_opens = Arc::new(AtomicU32::new(0));
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::under(dir.path());
         paths.ensure().unwrap();
@@ -228,7 +256,12 @@ impl Pc {
             cfg,
             DeviceStore::default(),
             TrackedInput::new(Box::new(input.clone())),
-            Arc::new(FakeCapture(capture_open, stall_after)),
+            Arc::new(FakeCapture {
+                open_delay: capture_open,
+                stall_after,
+                slow_first_audio,
+                audio_opens: audio_opens.clone(),
+            }),
             Notifier::disabled(),
         ));
         let router = spawn_router(
@@ -243,6 +276,7 @@ impl Pc {
             state,
             router,
             input,
+            audio_opens,
         }
     }
 
@@ -940,4 +974,64 @@ async fn audio_on_sends_numbered_datagrams_and_off_stops_them() {
             .is_err(),
         "audio still flowing after SetAudio off"
     );
+}
+
+#[tokio::test]
+async fn a_capture_that_stays_slow_is_restarted_and_numbering_continues() {
+    let pc = Pc::start_slow_audio().await;
+    let (conn, mut send, _recv, _ep) = raw_session(&pc, ALPN_SESSION_V2).await;
+    write_frame(&mut send, &ClientMsg::SetAudio { on: true }, 4096)
+        .await
+        .unwrap();
+    // A phone pings; without it the PC ends a silent session long before this test is done.
+    let pinger = tokio::spawn(async move {
+        for t in 0u64.. {
+            if write_frame(&mut send, &ClientMsg::Ping { t }, 4096)
+                .await
+                .is_err()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    });
+    // Slow (30/s) for SLOW_SECS seconds, then a new capture at 50/s.
+    let start = tokio::time::Instant::now();
+    let mut seqs = Vec::new();
+    while pc.audio_opens.load(Ordering::SeqCst) < 2 {
+        assert!(
+            start.elapsed() < Duration::from_secs(8),
+            "capture never restarted"
+        );
+        if let Ok(Ok(d)) = timeout(Duration::from_millis(200), conn.read_datagram()).await {
+            seqs.push(dishus_proto::AudioHeader::decode(&d).unwrap().0.seq);
+        }
+    }
+    let restarted_after = start.elapsed();
+    assert!(
+        restarted_after >= Duration::from_secs(3),
+        "{restarted_after:?}"
+    );
+    // After the restart: 50 a second, numbers carrying on without a reset.
+    let t = tokio::time::Instant::now();
+    let mut after = 0;
+    while t.elapsed() < Duration::from_secs(2) {
+        let d = timeout(Duration::from_secs(1), conn.read_datagram())
+            .await
+            .unwrap()
+            .unwrap();
+        seqs.push(dishus_proto::AudioHeader::decode(&d).unwrap().0.seq);
+        after += 1;
+    }
+    assert!(
+        (90..=110).contains(&after),
+        "{after} packets in 2 s after the restart"
+    );
+    assert!(seqs.windows(2).all(|w| w[1] == w[0] + 1), "{seqs:?}");
+    assert_eq!(
+        pc.audio_opens.load(Ordering::SeqCst),
+        2,
+        "restarted only once"
+    );
+    pinger.abort();
 }
